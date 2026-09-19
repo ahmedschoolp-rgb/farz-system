@@ -136,38 +136,36 @@ class TestDynamicColumns(unittest.TestCase):
         ]
 
         ordered = order_matching_columns(veh_cols, ref_cols)
+        clean_names = [clean for raw, clean in ordered]
 
         # 1. حالة المطابقة
-        self.assertEqual(ordered[0], 'حالة المطابقة')
+        self.assertEqual(clean_names[0], 'حالة المطابقة')
         # 2. اللوحة من الداتا
-        self.assertEqual(ordered[1], '[السيارة] اللوحة')
+        self.assertEqual(clean_names[1], 'اللوحة')
         # 3. اللوحة من الإحالة
-        self.assertEqual(ordered[2], '[الإحالة] اللوحة')
+        self.assertEqual(clean_names[2], 'لوحة الإحالة')
         # 4. داتا: النوع، الملاحظات، الشارع، الحي، التاريخ
-        self.assertEqual(ordered[3], '[السيارة] النوع / الموديل')
-        self.assertEqual(ordered[4], '[السيارة] الملاحظات')
-        self.assertEqual(ordered[5], '[السيارة] الشارع')
-        self.assertEqual(ordered[6], '[السيارة] الحي')
-        self.assertEqual(ordered[7], '[السيارة] التاريخ')
-        # 5. إحالة: صانع وطراز، سنة الصنع، اسم العميل، اللون، نوع اللوحة
-        self.assertEqual(ordered[8], '[الإحالة] صانع المركبة')
-        self.assertEqual(ordered[9], '[الإحالة] طراز المركبة')
-        self.assertEqual(ordered[10], '[الإحالة] سنة الصنع')
-        self.assertEqual(ordered[11], '[الإحالة] اسم العميل')
-        self.assertEqual(ordered[12], '[الإحالة] اللون')
-        self.assertEqual(ordered[13], '[الإحالة] نوع اللوحة')
+        self.assertEqual(clean_names[3], 'النوع')
+        self.assertEqual(clean_names[4], 'الملاحظات')
+        self.assertEqual(clean_names[5], 'الشارع')
+        self.assertEqual(clean_names[6], 'الحي')
+        self.assertEqual(clean_names[7], 'التاريخ')
+        # 5. إحالة: سنة الصنع، اسم العميل، اللون، نوع اللوحة
+        self.assertEqual(clean_names[8], 'سنة الصنع')
+        self.assertEqual(clean_names[9], 'اسم العميل')
+        self.assertEqual(clean_names[10], 'اللون')
+        self.assertEqual(clean_names[11], 'نوع اللوحة')
         # 6. الموقع / الرابط من الداتا
-        self.assertEqual(ordered[14], '[السيارة] رابط الموقع')
-        # 7. باقي أعمدة الداتا
-        self.assertIn('[السيارة] الشاص', ordered[15:])
-        self.assertIn('[السيارة] البنك', ordered[15:])
-        self.assertIn('[السيارة] رقم العقد', ordered[15:])
-        # 8. باقي أعمدة الإحالة
-        self.assertIn('[الإحالة] رقم المعاملة', ordered[15:])
-        self.assertIn('[الإحالة] جهة الإحالة', ordered[15:])
+        self.assertIn('الموقع', clean_names)
+        # 7. باقي أعمدة الداتا والإحالة
+        self.assertIn('الشاص', clean_names)
+        self.assertIn('البنك', clean_names)
+        self.assertIn('رقم العقد', clean_names)
+        self.assertIn('رقم المعاملة', clean_names)
+        self.assertIn('جهة الإحالة', clean_names)
 
         # لا يوجد أي عمود مفقود
-        self.assertEqual(len(ordered), len(veh_cols) + len(ref_cols) + 1)
+        self.assertEqual(len(clean_names), len(veh_cols) + len(ref_cols) + 1)
 
     def test_compressed_gzip_and_zip_ingestion(self):
         import gzip

@@ -75,8 +75,8 @@ class TestAPIEndToEnd(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         search_data = res.json()
         self.assertEqual(search_data["total_matches"], 3)  # يجب أن يجد كل السجلات الـ 3 المكررة
-        self.assertIn("[السيارة] النوع / الموديل", search_data["results"][0])
-        self.assertIn("[السيارة] الشارع", search_data["results"][0])
+        self.assertIn("النوع / الموديل", search_data["results"][0])
+        self.assertIn("الشارع", search_data["results"][0])
 
         # 8. رفع ومطابقة ملف الإحالة
         sample_ref_path = os.path.join("data", "samples", "sample_referral.csv")
@@ -100,24 +100,22 @@ class TestAPIEndToEnd(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         cols = res.json()["data"]["columns"]
         records = res.json()["data"]["records"]
-        self.assertEqual(len(records), 6)  # 3 لـ حكا + 1 لبدو + 1 لسصع + 1 لغير موجود
+        self.assertEqual(len(records), 5)  # المتطابق فقط (3 لـ حكا + 1 لبدو + 1 لسصع)
 
-        # التأكد من الترتيب المنطقي الدقيق للأعمدة
+        # التأكد من الترتيب المنطقي الدقيق ونظافة الأعمدة من البادئات
         self.assertEqual(cols[0], "حالة المطابقة")
-        self.assertEqual(cols[1], "[السيارة] اللوحة")
-        self.assertEqual(cols[2], "[الإحالة] اللوحة")
-        self.assertIn("[السيارة] النوع / الموديل", cols)
-        self.assertIn("[السيارة] الملاحظات", cols)
-        self.assertIn("[السيارة] الشارع", cols)
-        self.assertIn("[السيارة] الحي", cols)
-        self.assertIn("[السيارة] التاريخ", cols)
-        self.assertIn("[الإحالة] صانع المركبة", cols)
-        self.assertIn("[الإحالة] طراز المركبة", cols)
-        self.assertIn("[الإحالة] سنة الصنع", cols)
-        self.assertIn("[الإحالة] اسم العميل", cols)
-        self.assertIn("[الإحالة] اللون", cols)
-        self.assertIn("[الإحالة] نوع اللوحة", cols)
-        self.assertIn("[السيارة] رابط الموقع", cols)
+        self.assertEqual(cols[1], "اللوحة")
+        self.assertEqual(cols[2], "لوحة الإحالة")
+        self.assertIn("النوع", cols)
+        self.assertIn("الملاحظات", cols)
+        self.assertIn("الشارع", cols)
+        self.assertIn("الحي", cols)
+        self.assertIn("التاريخ", cols)
+        self.assertIn("سنة الصنع", cols)
+        self.assertIn("اسم العميل", cols)
+        self.assertIn("اللون", cols)
+        self.assertIn("نوع اللوحة", cols)
+        self.assertIn("الموقع", cols)
 
         # 10. اختبار تصدير Excel
         res = self.client.get("/api/referral/export?format=xlsx&filter_status=all", headers=headers)

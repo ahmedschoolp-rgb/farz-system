@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 
 from backend.config import UPLOADS_DIR
 from backend.auth import get_current_active_user
-from backend.matching_engine import match_referral_file, get_match_results_page, export_match_results
+from backend.matching_engine import match_referral_file, get_match_results_page, export_match_results, get_match_map_points
 
 router = APIRouter(prefix="/api/referral", tags=["مطابقة ملفات الإحالة والتصدير"])
 
@@ -87,6 +87,15 @@ def get_results(
         search_query=q
     )
     return {"success": True, "data": results}
+
+
+@router.get("/map-points")
+def get_map_points(user: dict = Depends(get_current_active_user)):
+    """
+    استرجاع مواقع ونقاط كافة السيارات المتطابقة لعرضها على الخريطة التفاعلية
+    """
+    points = get_match_map_points(user["id"])
+    return {"success": True, "count": len(points), "points": points}
 
 
 @router.get("/export")

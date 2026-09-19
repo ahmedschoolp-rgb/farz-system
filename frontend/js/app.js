@@ -15,7 +15,18 @@ const state = {
   currentFilter: 'all',
   searchQuery: '',
   selectedDatasetFile: null,
-  selectedReferralFile: null
+  selectedReferralFile: null,
+  // متغيرات خريطة أسطول السيارات والتتبع والملاحة
+  fleetMap: null,
+  markersLayer: null,
+  userGpsMarker: null,
+  routePolyline: null,
+  userLocation: null,
+  mapPoints: [],
+  carMarkersMap: new Map(),
+  gpsWatchId: null,
+  closestCar: null,
+  activeDestinationCar: null
 };
 
 // تهيئة التطبيق عند فتح الصفحة
@@ -420,6 +431,7 @@ async function uploadAndMatchReferral() {
       await loadMatchResults();
       document.getElementById("resultsSection").style.display = "block";
       document.getElementById("resultsSection").scrollIntoView({ behavior: 'smooth' });
+      await loadMapPoints();
       showToast(`تمت المطابقة بنجاح في ${data.summary.execution_time_ms} ميلي ثانية!`, "success");
     } else {
       showToast(data.detail || "فشل تنفيذ المطابقة", "error");
@@ -474,7 +486,7 @@ async function loadMatchResults() {
   }
 }
 
-// رسم رؤوس الأعمدة ديناميكيًا لشمول كل حقول الإحالة والسيارة
+// رسم رؤوس الأعمدة النظيفة بدون كتابة إحالة أو داتا
 function renderTableHeaders(columns) {
   const thead = document.getElementById("resultsTableHead");
   if (!thead) return;
@@ -486,38 +498,36 @@ function renderTableHeaders(columns) {
 
   const ths = columns.map(col => {
     let extraClass = "";
-    let cleanTitle = col;
-    if (col === "حالة المطابقة") {
+    let cleanTitle = String(col)
+      .replace(/^\[(الإحالة|السيارة)\]\s*/, '')
+      .replace(/\s*\((داتا|إحالة)\)/, '')
+      .trim();
+
+    if (cleanTitle === "حالة المطابقة") {
       extraClass = "th-status sticky-col";
-      cleanTitle = "حالة المطابقة";
-    } else if (col.startsWith("[الإحالة]")) {
-      extraClass = "th-referral";
-      const name = col.replace(/^\[الإحالة\]\s*/, '');
-      cleanTitle = `<span class="col-pill pill-ref">الإحالة</span> ${name}`;
-    } else if (col.startsWith("[السيارة]")) {
-      extraClass = "th-vehicle";
-      const name = col.replace(/^\[السيارة\]\s*/, '');
-      cleanTitle = `<span class="col-pill pill-veh">الداتا</span> ${name}`;
     }
     return `<th class="${extraClass}">${cleanTitle}</th>`;
   }).join("");
 
-  thead.innerHTML = `<tr><th style="width: 45px; text-align:center;">#</th>${ths}</tr>`;
+  thead.innerHTML = `<tr><th style="width: 45px; text-align:center;">#</th>${ths}<th style="text-align:center; min-width: 90px;">الخريطة</th></tr>`;
 }
 
-// رسم صفوف جدول النتائج بكافة الأعمدة
+// رسم صفوف جدول النتائج بكافة الأعمدة النظيفة
 function renderTableRows(records, columns) {
   const tableBody = document.getElementById("resultsTableBody");
   if (!tableBody) return;
 
   if (!records || records.length === 0) {
-    const colCount = (columns ? columns.length : 10) + 1;
+    const colCount = (columns ? columns.length : 10) + 2;
     tableBody.innerHTML = `<tr><td colspan="${colCount}" style="text-align:center; padding: 32px; color: var(--text-muted);">لا توجد سجلات مطابقة لهذا البحث أو الفلتر.</td></tr>`;
     return;
   }
 
   tableBody.innerHTML = records.map((r, idx) => {
     const rowNum = (state.currentPage - 1) * state.pageSize + idx + 1;
+
+    // استخراج رقم اللوحة لهذا الصف للربط مع الخريطة
+    const rowPlate = r['اللوحة'] || r['لوحة الإحالة'] || r['لوحة'] || '';
 
     const tds = columns.map(col => {
       const val = r[col];
@@ -535,18 +545,23 @@ function renderTableRows(records, columns) {
       if (hasVal) {
         const rawStr = String(val).trim();
         if (rawStr.startsWith('http://') || rawStr.startsWith('https://') || rawStr.includes('maps.google') || rawStr.includes('goo.gl')) {
-          contentHtml = `<a href="${encodeURI(rawStr)}" target="_blank" rel="noopener noreferrer" class="map-link-btn" title="${rawStr}">📍 فتح الموقع</a>`;
+          contentHtml = `<a href="${encodeURI(rawStr)}" target="_blank" rel="noopener noreferrer" class="map-link-btn" title="${rawStr}">📍 فتح الرابط</a>`;
         } else if ((col.includes('موقع') || col.includes('رابط') || col.includes('خريطة') || col.includes('location')) && rawStr.includes(',') && !isNaN(parseFloat(rawStr.split(',')[0]))) {
-          contentHtml = `<a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(rawStr)}" target="_blank" rel="noopener noreferrer" class="map-link-btn" title="${rawStr}">📍 فتح الخريطة</a>`;
+          contentHtml = `<a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(rawStr)}" target="_blank" rel="noopener noreferrer" class="map-link-btn" title="${rawStr}">📍 فتح الإحداثيات</a>`;
         }
       }
 
-      // تمييز خفيف بين أعمدة الإحالة وأعمدة الداتا
-      const cellClass = col.startsWith("[السيارة]") ? "td-veh" : "td-ref";
-      return `<td class="${cellClass}">${contentHtml}</td>`;
+      return `<td>${contentHtml}</td>`;
     }).join("");
 
-    return `<tr><td style="text-align:center; font-weight:700; color:#64748b;">${rowNum}</td>${tds}</tr>`;
+    const safePlate = String(rowPlate).replace(/'/g, "\\'");
+    const mapActionTd = `<td style="text-align:center;">
+      <button class="btn-map-row" onclick="focusCarOnMap('${safePlate}')" title="عرض موقع السيارة على الخريطة وتوجيه المسار">
+        <span>📍</span> الخريطة
+      </button>
+    </td>`;
+
+    return `<tr><td style="text-align:center; font-weight:700; color:#64748b;">${rowNum}</td>${tds}${mapActionTd}</tr>`;
   }).join("");
 }
 
@@ -689,3 +704,408 @@ function showToast(message, type = "info") {
     setTimeout(() => toast.remove(), 300);
   }, 4000);
 }
+
+// ==============================================================================
+// محرك الخريطة التفاعلية وتتبع أسطول السيارات المتطابقة والملاحة (Fleet Map Engine)
+// ==============================================================================
+
+// تهيئة خريطة Leaflet
+function initFleetMap() {
+  if (typeof L === 'undefined') {
+    console.warn("مكتبة Leaflet غير محملة بعد.");
+    return false;
+  }
+
+  const mapContainer = document.getElementById("fleetMap");
+  if (!mapContainer) return false;
+
+  if (state.fleetMap) {
+    state.fleetMap.invalidateSize();
+    return true;
+  }
+
+  // إنشاء الخريطة مع مركز افتراضي (منطقة الرياض والمملكة)
+  state.fleetMap = L.map('fleetMap', {
+    zoomControl: true,
+    scrollWheelZoom: true
+  }).setView([24.7136, 46.6753], 11);
+
+  // طبقة خرائط OpenStreetMap السريعة والمجانية
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '© OpenStreetMap contributors'
+  }).addTo(state.fleetMap);
+
+  // طبقة مخصصة لتجميع علامات السيارات
+  state.markersLayer = L.layerGroup().addTo(state.fleetMap);
+
+  return true;
+}
+
+// تحميل نقاط السيارات المتطابقة من السيرفر ورسمها على الخريطة
+async function loadMapPoints() {
+  if (!initFleetMap()) return;
+
+  const countBadge = document.getElementById("mapCarCount");
+
+  try {
+    const res = await fetch("/api/referral/map-points", {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+
+    const data = await res.json();
+    if (!data.success || !data.points) {
+      if (countBadge) countBadge.innerText = "0 سيارة";
+      return;
+    }
+
+    state.mapPoints = data.points;
+    if (countBadge) countBadge.innerText = `${data.points.length} سيارة`;
+
+    // تنظيف العلامات السابقة
+    if (state.markersLayer) {
+      state.markersLayer.clearLayers();
+    }
+    state.carMarkersMap.clear();
+
+    const boundsList = [];
+
+    data.points.forEach(p => {
+      if (typeof p.lat !== 'number' || typeof p.lng !== 'number') return;
+
+      const isMulti = !!p.is_multi;
+      const safePlate = (p.plate || '').replace(/"/g, '&quot;');
+      const plateKey = String(p.plate || '').trim();
+
+      // أيقونة مخصصة لكل سيارة
+      const iconHtml = `<div class="car-marker-icon ${isMulti ? 'multi' : ''}" title="لوحة: ${safePlate}">🚗 ${safePlate}</div>`;
+      const customIcon = L.divIcon({
+        className: 'custom-car-pin-wrap',
+        html: iconHtml,
+        iconSize: [85, 26],
+        iconAnchor: [42, 13]
+      });
+
+      const marker = L.marker([p.lat, p.lng], { icon: customIcon });
+
+      // محتوى النافذة المنبثقة للسيارة
+      const popupHtml = `
+        <div class="map-car-popup">
+          <div class="map-car-popup-header">
+            <span class="map-car-popup-plate">🚗 ${safePlate}</span>
+            <span class="badge ${isMulti ? 'badge-multiple' : 'badge-matched'}">${isMulti ? 'تطابق متعدد' : 'تطابق فردي'}</span>
+          </div>
+          <div class="map-car-popup-info">
+            ${p.model ? `<div><strong>النوع:</strong> ${p.model}</div>` : ''}
+            ${p.client ? `<div><strong>العميل:</strong> ${p.client}</div>` : ''}
+            ${p.notes ? `<div><strong>الملاحظات:</strong> ${p.notes}</div>` : ''}
+            <div id="popup-dist-${escapeId(plateKey)}" class="map-car-popup-dist" style="display:none;"></div>
+          </div>
+          <div class="map-car-popup-actions">
+            <button class="btn btn-primary btn-sm" onclick="drawRouteToCar(${p.lat}, ${p.lng}, '${plateKey.replace(/'/g, "\\'")}')">
+              🚗 مسار السير
+            </button>
+            <a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}&travelmode=driving" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm">
+              🧭 خرائط Google
+            </a>
+          </div>
+        </div>
+      `;
+
+      marker.bindPopup(popupHtml);
+
+      // حفظ العلامة في الخريطة والقاموس
+      marker.addTo(state.markersLayer);
+      state.carMarkersMap.set(plateKey, marker);
+      boundsList.push([p.lat, p.lng]);
+    });
+
+    // احتواء كافة السيارات داخل إطار العرض
+    if (boundsList.length > 0) {
+      if (state.userLocation) {
+        boundsList.push([state.userLocation.lat, state.userLocation.lng]);
+      }
+      state.fleetMap.fitBounds(boundsList, { padding: [40, 40] });
+    }
+
+    // تحديث مسافات السيارات وأقرب سيارة إذا كان موقع المستخدم متاحًا
+    if (state.userLocation) {
+      updateDistancesAndClosestCar();
+    }
+
+    setTimeout(() => {
+      if (state.fleetMap) state.fleetMap.invalidateSize();
+    }, 250);
+
+  } catch (err) {
+    console.error("فشل جلب نقاط خريطة السيارات:", err);
+  }
+}
+
+// إظهار كافة السيارات على الخريطة
+function fitAllCarsOnMap() {
+  if (!state.fleetMap || state.carMarkersMap.size === 0) {
+    showToast("لا توجد سيارات معروضة على الخريطة حالياً", "warning");
+    return;
+  }
+
+  const bounds = [];
+  state.carMarkersMap.forEach(marker => {
+    bounds.push(marker.getLatLng());
+  });
+
+  if (state.userLocation) {
+    bounds.push([state.userLocation.lat, state.userLocation.lng]);
+  }
+
+  state.fleetMap.fitBounds(bounds, { padding: [50, 50] });
+}
+
+// تفعيل / إيقاف تتبع موقع المستخدم بالـ GPS الحي
+function toggleGpsTracking() {
+  if (state.gpsWatchId !== null) {
+    // إيقاف التتبع
+    navigator.geolocation.clearWatch(state.gpsWatchId);
+    state.gpsWatchId = null;
+
+    const iconEl = document.getElementById("gpsBtnIcon");
+    const textEl = document.getElementById("gpsBtnText");
+    if (iconEl) iconEl.innerText = "📡";
+    if (textEl) textEl.innerText = "تتبع موقعي وتحديد أقرب سيارة";
+
+    showToast("تم إيقاف تتبع الموقع", "info");
+    return;
+  }
+
+  if (!navigator.geolocation) {
+    showToast("خاصية تحديد الموقع الجغرافي (GPS) غير مدعومة في هذا المتصفح", "error");
+    return;
+  }
+
+  const iconEl = document.getElementById("gpsBtnIcon");
+  const textEl = document.getElementById("gpsBtnText");
+  if (iconEl) iconEl.innerText = "⏳";
+  if (textEl) textEl.innerText = "جاري الاتصال بالـ GPS...";
+
+  state.gpsWatchId = navigator.geolocation.watchPosition(
+    onGpsSuccess,
+    onGpsError,
+    {
+      enableHighAccuracy: true,
+      timeout: 12000,
+      maximumAge: 1000
+    }
+  );
+}
+
+// عند استلام إحداثيات GPS المستخدم بنجاح
+function onGpsSuccess(pos) {
+  const { latitude, longitude, accuracy } = pos.coords;
+  state.userLocation = { lat: latitude, lng: longitude, accuracy };
+
+  const iconEl = document.getElementById("gpsBtnIcon");
+  const textEl = document.getElementById("gpsBtnText");
+  if (iconEl) iconEl.innerText = "🟢";
+  if (textEl) textEl.innerText = "جاري تتبع موقعك المباشر (نشط)";
+
+  // رسم أو تحريك علامة المستخدم على الخريطة
+  const userIcon = L.divIcon({
+    className: 'user-gps-marker',
+    html: `
+      <div class="user-gps-pulse-wrap" title="موقعك الحالي (دقة: ${Math.round(accuracy)} م)">
+        <div class="user-gps-ring"></div>
+        <div class="user-gps-dot"></div>
+      </div>
+    `,
+    iconSize: [32, 32],
+    iconAnchor: [16, 16]
+  });
+
+  if (!state.userGpsMarker) {
+    state.userGpsMarker = L.marker([latitude, longitude], {
+      icon: userIcon,
+      zIndexOffset: 1000
+    }).addTo(state.fleetMap);
+  } else {
+    state.userGpsMarker.setLatLng([latitude, longitude]);
+  }
+
+  // تحديث المسافات واختيار أقرب سيارة
+  updateDistancesAndClosestCar();
+
+  // تحديث مسار السير المرسوم إذا كان هناك سيارة هدف نشطة
+  if (state.activeDestinationCar) {
+    drawRouteToCar(state.activeDestinationCar.lat, state.activeDestinationCar.lng, state.activeDestinationCar.plate, false);
+  }
+}
+
+// عند حدوث خطأ في GPS
+function onGpsError(err) {
+  console.warn("GPS Error:", err);
+  const iconEl = document.getElementById("gpsBtnIcon");
+  const textEl = document.getElementById("gpsBtnText");
+  if (iconEl) iconEl.innerText = "📡";
+  if (textEl) textEl.innerText = "تتبع موقعي وتحديد أقرب سيارة";
+  state.gpsWatchId = null;
+
+  let msg = "تعذر تحديد موقعك الحالي.";
+  if (err.code === 1) msg = "تم رفض إذن الوصول إلى الموقع الجغرافي من المتصفح.";
+  else if (err.code === 2) msg = "إشارة GPS غير متوفرة حالياً.";
+  else if (err.code === 3) msg = "انتهت مهلة استجابة الـ GPS.";
+  showToast(msg, "warning");
+}
+
+// حساب المسافات لجميع السيارات واختيار أقرب سيارة لموقع المستخدم
+function updateDistancesAndClosestCar() {
+  if (!state.userLocation || !state.mapPoints || state.mapPoints.length === 0) return;
+
+  const uLat = state.userLocation.lat;
+  const uLng = state.userLocation.lng;
+
+  const pointsWithDist = state.mapPoints.map(p => {
+    const dist = calculateDistanceMeters(uLat, uLng, p.lat, p.lng);
+    return { ...p, distanceMeters: dist };
+  });
+
+  // ترتيب تصاعدي حسب المسافة
+  pointsWithDist.sort((a, b) => a.distanceMeters - b.distanceMeters);
+
+  const closest = pointsWithDist[0];
+  state.closestCar = closest;
+
+  // تحديث شريط تنبيه أقرب سيارة
+  const banner = document.getElementById("closestCarAlert");
+  const detailsEl = document.getElementById("closestCarDetails");
+  const routeBtn = document.getElementById("btnRouteToClosest");
+  const navBtn = document.getElementById("btnNavGoogleMaps");
+
+  if (banner && detailsEl && closest) {
+    const distText = formatDistance(closest.distanceMeters);
+    detailsEl.innerHTML = `
+      اللوحة: <strong style="color:#0f172a; font-size:15px;">${closest.plate}</strong>
+      ${closest.model ? `• الطراز: ${closest.model}` : ''}
+      ${closest.notes ? `• ${closest.notes}` : ''}
+      — <span style="background:#dcfce7; color:#15803d; padding:2px 8px; border-radius:6px; font-weight:800;">📏 المسافة: ${distText}</span>
+    `;
+
+    banner.style.display = "flex";
+
+    if (routeBtn) {
+      routeBtn.onclick = () => {
+        focusCarOnMap(closest.plate);
+        drawRouteToCar(closest.lat, closest.lng, closest.plate);
+      };
+    }
+
+    if (navBtn) {
+      navBtn.href = `https://www.google.com/maps/dir/?api=1&origin=${uLat},${uLng}&destination=${closest.lat},${closest.lng}&travelmode=driving`;
+    }
+  }
+
+  // تحديث المسافة داخل نوافذ الـ Popup المفتوحة
+  pointsWithDist.forEach(p => {
+    const el = document.getElementById(`popup-dist-${escapeId(p.plate)}`);
+    if (el) {
+      el.style.display = "inline-flex";
+      el.innerText = `📏 على بعد: ${formatDistance(p.distanceMeters)}`;
+    }
+  });
+}
+
+// رسم مسار السير والتوجيه من موقع المستخدم إلى سيارة محددة
+function drawRouteToCar(carLat, carLng, plate, doToast = true) {
+  if (!state.fleetMap) return;
+
+  state.activeDestinationCar = { lat: carLat, lng: carLng, plate };
+
+  if (!state.userLocation) {
+    // تشغيل الـ GPS إذا لم يكن مفعلاً
+    toggleGpsTracking();
+    showToast("جاري تحديد موقعك لرسم خط التوجيه نحو السيارة...", "info");
+    return;
+  }
+
+  const uLat = state.userLocation.lat;
+  const uLng = state.userLocation.lng;
+
+  // مسح أي مسار سابق
+  if (state.routePolyline) {
+    state.fleetMap.removeLayer(state.routePolyline);
+  }
+
+  // رسم خط المسار المتقطع الأنيق
+  state.routePolyline = L.polyline([
+    [uLat, uLng],
+    [carLat, carLng]
+  ], {
+    color: '#2563eb',
+    weight: 4,
+    opacity: 0.85,
+    dashArray: '8, 8',
+    lineCap: 'round'
+  }).addTo(state.fleetMap);
+
+  // احتواء المسار في الشاشة
+  state.fleetMap.fitBounds([
+    [uLat, uLng],
+    [carLat, carLng]
+  ], { padding: [70, 70] });
+
+  const dist = calculateDistanceMeters(uLat, uLng, carLat, carLng);
+  if (doToast) {
+    showToast(`تم رسم مسار التوجيه نحو السيارة (${plate}) • المسافة: ${formatDistance(dist)}`, "success");
+  }
+}
+
+// تركيز الخريطة على سيارة محددة باللوحة (من الجدول أو البحث)
+function focusCarOnMap(plate) {
+  if (!initFleetMap()) return;
+
+  const cleanPlate = String(plate).trim();
+  const marker = state.carMarkersMap.get(cleanPlate);
+
+  const mapContainer = document.getElementById("mapCardContainer");
+  if (mapContainer) {
+    mapContainer.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  if (marker) {
+    const latLng = marker.getLatLng();
+    state.fleetMap.setView(latLng, 16, { animate: true });
+    setTimeout(() => {
+      marker.openPopup();
+      if (state.userLocation) {
+        drawRouteToCar(latLng.lat, latLng.lng, cleanPlate, true);
+      }
+    }, 350);
+  } else {
+    showToast(`لم يتم العثور على إحداثيات موقع دقيقة للوحة: ${cleanPlate}`, "warning");
+  }
+}
+
+// معادلة Haversine لحساب المسافة بدقة بالمتر بين إحداثيتين
+function calculateDistanceMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000; // نصف قطر الأرض بالأمتار
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+// تنسيق المسافة بالمتر أو الكيلومتر
+function formatDistance(meters) {
+  if (isNaN(meters) || meters === null) return "-";
+  if (meters < 1000) {
+    return `${Math.round(meters)} متر`;
+  }
+  return `${(meters / 1000).toFixed(1)} كم`;
+}
+
+// تنظيف المعرفات لاستخدامها في الـ DOM
+function escapeId(str) {
+  return String(str).replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, '_');
+}
+

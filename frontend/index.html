@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>نظام مطابقة بيانات السيارات | Vehicle Data Matching System</title>
-  <link rel="stylesheet" href="/css/style.css?v=3.1">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="/css/style.css?v=4.0">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet">
@@ -158,12 +158,48 @@
         </div>
       </div>
 
+      <!-- بطاقة خريطة أسطول السيارات المتطابقة وتوجيه المسار الفوري -->
+      <div class="card map-card" id="mapCardContainer">
+        <div class="card-header" style="flex-wrap: wrap; gap: 10px;">
+          <div class="card-title">
+            <span>🗺️</span> خريطة أماكن السيارات المطلوبة وتوجيه المسار (Fleet Map)
+            <span class="map-badge" id="mapCarCount">0 سيارة</span>
+          </div>
+          <div class="map-toolbar-actions">
+            <button class="btn btn-primary btn-sm" id="btnTrackUserLocation" onclick="toggleGpsTracking()">
+              <span id="gpsBtnIcon">📡</span> <span id="gpsBtnText">تتبع موقعي وتحديد أقرب سيارة</span>
+            </button>
+            <button class="btn btn-secondary btn-sm" id="btnFitAllCars" onclick="fitAllCarsOnMap()">
+              <span>🔍</span> إظهار كل السيارات
+            </button>
+          </div>
+        </div>
+
+        <!-- شريط تنبيه أقرب سيارة لموقع المستخدم -->
+        <div id="closestCarAlert" class="closest-car-banner" style="display: none;">
+          <div class="closest-car-info">
+            <div class="closest-title">🎯 أقرب سيارة مطلوبة لموقعك الحالي:</div>
+            <div class="closest-details" id="closestCarDetails">-</div>
+          </div>
+          <div class="closest-actions">
+            <button class="btn btn-success btn-sm" id="btnRouteToClosest">
+              <span>🚗</span> رسم مسار السير
+            </button>
+            <a id="btnNavGoogleMaps" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-sm">
+              <span>🧭</span> فتح الملاحة (Google Maps)
+            </a>
+          </div>
+        </div>
+
+        <!-- حاوية عرض الخريطة التفاعلية -->
+        <div id="fleetMap" class="fleet-map-view"></div>
+      </div>
+
       <!-- شريط أدوات الجدول والفلاتر والتصدير -->
       <div class="table-toolbar">
         <div class="filter-tabs">
-          <button class="tab-btn active" data-filter="all">الكل</button>
-          <button class="tab-btn" data-filter="matched">المتطابق فقط ✅</button>
-          <button class="tab-btn" data-filter="unmatched">غير المتطابق فقط ❌</button>
+          <button class="tab-btn active" data-filter="all">كافة المتطابقات (فردي + متعدد) ✅</button>
+          <button class="tab-btn" data-filter="matched">تطابق فردي فقط</button>
           <button class="tab-btn" data-filter="multiple">تطابقات متعددة 🔄</button>
         </div>
 
@@ -246,6 +282,7 @@
     }
   </script>
 
-  <script src="/js/app.js?v=3.1"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/js/app.js?v=4.0"></script>
 </body>
 </html>

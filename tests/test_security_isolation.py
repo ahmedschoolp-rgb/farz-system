@@ -63,7 +63,7 @@ class TestSecurityIsolation(unittest.TestCase):
             # البحث السريع للمستخدم 1 عن لوحته الخاصة يجب أن يجدها
             u1_search_own = quick_search_single_plate(self.user1_id, "س ص ع 1111")
             self.assertEqual(len(u1_search_own), 1)
-            self.assertEqual(u1_search_own[0]["[السيارة] الشاص"], "VIN_USER1")
+            self.assertEqual(u1_search_own[0]["الشاص"], "VIN_USER1")
 
             # مطابقة ملف إحالة للمستخدم 1 يبحث عن لوحة المستخدم 2
             ref_data = [{"اللوحة": "ط ك ل 2222", "الشاص": "TEST"}]

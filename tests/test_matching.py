@@ -77,35 +77,32 @@ class TestMatchingEngine(unittest.TestCase):
                 records = page_data["records"]
                 cols = page_data["columns"]
 
-                # التحقق من وجود كافة أعمدة الإحالة بالكامل
-                self.assertIn("[الإحالة] نوع اللوحة", cols)
-                self.assertIn("[الإحالة] اللون المطلوب", cols)
+                # التحقق من وجود كافة أعمدة الإحالة بالكامل بمسميات نظيفة
+                self.assertIn("نوع اللوحة", cols)
+                self.assertIn("اللون", cols)
 
-                # التحقق من وجود كافة أعمدة السيارة بالكامل
-                self.assertIn("[السيارة] الموديل", cols)
-                self.assertIn("[السيارة] اللون", cols)
-                self.assertIn("[السيارة] الشاص", cols)
+                # التحقق من وجود كافة أعمدة السيارة بالكامل بمسميات نظيفة
+                self.assertIn("النوع", cols)
+                self.assertIn("الشاص", cols)
 
                 # التحقق من تطابق حكا9053
-                hka_matches = [r for r in records if "حكا 9053" in str(r.get("[الإحالة] اللوحة", ""))]
+                hka_matches = [r for r in records if "حكا 9053" in str(r.get("لوحة الإحالة", ""))]
                 self.assertEqual(len(hka_matches), 3)
 
-                found_chassis = {r["[السيارة] الشاص"] for r in hka_matches}
+                found_chassis = {r["الشاص"] for r in hka_matches}
                 self.assertEqual(found_chassis, {"CHASSIS_A1", "CHASSIS_A2", "CHASSIS_A3"})
 
-                found_models = {r["[السيارة] الموديل"] for r in hka_matches}
+                found_models = {r["النوع"] for r in hka_matches}
                 self.assertEqual(found_models, {"كامري", "لاندكروزر", "يارس"})
 
-                # فحص السجل غير المتطابق
-                unmatched = [r for r in records if "غير موجود 9999" in str(r.get("[الإحالة] اللوحة", ""))]
-                self.assertEqual(len(unmatched), 1)
-                self.assertEqual(unmatched[0]["حالة المطابقة"], "غير متطابق")
-                self.assertEqual(unmatched[0]["[السيارة] الشاص"], "")
+                # فحص استبعاد غير المتطابق من الجدول (حصر الجدول على المتطابق فقط)
+                unmatched = [r for r in records if "غير موجود 9999" in str(r.get("لوحة الإحالة", ""))]
+                self.assertEqual(len(unmatched), 0)
 
-                # فحص البحث السريع المنفرد
+                # فحص البحث السريع المنفرد بمسميات نظيفة
                 quick_res = quick_search_single_plate(self.user_id, " ح ك ا 9053 ")
                 self.assertEqual(len(quick_res), 3)
-                self.assertIn("[السيارة] الموديل", quick_res[0])
+                self.assertIn("الموديل", quick_res[0])
 
             finally:
                 if os.path.exists(referral_file):

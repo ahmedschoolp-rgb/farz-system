@@ -689,3 +689,247 @@ body {
   from { transform: translateY(20px); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }
 }
+
+/* =========================================================
+   خريطة أسطول السيارات والتتبع والملاحة (Fleet Map Styles)
+   ========================================================= */
+
+.map-card {
+  margin-bottom: 24px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+
+.map-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--primary-light);
+  color: var(--primary);
+  padding: 3px 10px;
+  border-radius: 9999px;
+  margin-right: 10px;
+}
+
+.map-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.fleet-map-view {
+  width: 100%;
+  height: 480px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #f1f5f9;
+  z-index: 10;
+}
+
+/* شريط تنبيه أقرب سيارة */
+.closest-car-banner {
+  background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+  border: 1px solid #86efac;
+  border-radius: 10px;
+  padding: 14px 20px;
+  margin-bottom: 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  box-shadow: 0 4px 12px rgba(22, 163, 74, 0.12);
+  animation: fadeIn 0.3s ease-out;
+}
+
+.closest-car-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.closest-title {
+  font-size: 15px;
+  font-weight: 800;
+  color: #166534;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.closest-details {
+  font-size: 13.5px;
+  color: #15803d;
+  font-weight: 600;
+}
+
+.closest-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* علامة GPS المستخدم النابضة (Radar Pulse Marker) */
+.user-gps-pulse-wrap {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.user-gps-dot {
+  width: 14px;
+  height: 14px;
+  background-color: #2563eb;
+  border: 2.5px solid #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 0 8px rgba(37, 99, 235, 0.6);
+  z-index: 2;
+}
+
+.user-gps-ring {
+  position: absolute;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgba(37, 99, 235, 0.3);
+  animation: radar-pulse 2s infinite ease-out;
+  z-index: 1;
+}
+
+@keyframes radar-pulse {
+  0% {
+    transform: scale(0.4);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+/* علامة سيارة مخصصة على الخريطة (Car Custom Pin) */
+.car-marker-icon {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: #ffffff;
+  border: 2px solid #16a34a;
+  color: #0f172a;
+  border-radius: 20px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.2);
+  white-space: nowrap;
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.car-marker-icon:hover {
+  transform: translate(-50%, -50%) scale(1.1);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.3);
+}
+
+.car-marker-icon.multi {
+  border-color: #7c3aed;
+}
+
+.car-marker-icon.active {
+  border-color: #dc2626;
+  background: #fef2f2;
+}
+
+/* نافذة التفاصيل المنبثقة للسيارة على الخريطة (Leaflet Popup) */
+.map-car-popup {
+  font-family: 'Cairo', 'Segoe UI', sans-serif;
+  direction: rtl;
+  min-width: 240px;
+  padding: 4px;
+}
+
+.map-car-popup-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 6px;
+  margin-bottom: 8px;
+}
+
+.map-car-popup-plate {
+  font-size: 15px;
+  font-weight: 800;
+  color: #1e293b;
+}
+
+.map-car-popup-info {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: #475569;
+  margin-bottom: 12px;
+}
+
+.map-car-popup-info strong {
+  color: #0f172a;
+}
+
+.map-car-popup-dist {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1d4ed8;
+  font-weight: 700;
+  padding: 4px 8px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.map-car-popup-actions {
+  display: flex;
+  gap: 6px;
+  border-top: 1px solid #e2e8f0;
+  padding-top: 8px;
+}
+
+.map-car-popup-actions button,
+.map-car-popup-actions a {
+  flex: 1;
+  text-align: center;
+  padding: 6px 10px;
+  font-size: 11px;
+}
+
+/* زر تحديد الخريطة في صفوف الجدول */
+.btn-map-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #eff6ff;
+  color: #2563eb;
+  border: 1px solid #bfdbfe;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-decoration: none;
+}
+
+.btn-map-row:hover {
+  background: #2563eb;
+  color: #ffffff;
+  border-color: #2563eb;
+}
+
