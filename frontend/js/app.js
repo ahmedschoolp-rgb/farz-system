@@ -278,12 +278,14 @@ async function uploadDatasetFile() {
   let uploadFile = file;
 
   // 1. تقنية الضغط المحلي التلقائي الفائق (Client-Side Compression)
-  // تحويل ملفات الـ CSV الكبيرة من 200MB إلى ~15MB في ثانية واحدة قبل الإرسال عبر الإنترنت
+  // عند الرفع عبر الإنترنت (Codespaces أو خادم سحابي) يتم الضغط لتقليل الحجم بنسبة 85% وتسريع النقل
+  // أما على الجهاز المحلي (localhost / 127.0.0.1) يتم الرفع المباشر فورياً بدون إضاعة وقت في المعالج
+  const isLocalHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
   const isPlainCsv = file.name.toLowerCase().endsWith('.csv') || file.name.toLowerCase().endsWith('.txt') || file.name.toLowerCase().endsWith('.tsv');
-  if (isPlainCsv && file.size > 2 * 1024 * 1024 && typeof CompressionStream !== 'undefined') {
+  if (!isLocalHost && isPlainCsv && file.size > 2 * 1024 * 1024 && typeof CompressionStream !== 'undefined') {
     try {
       btn.innerText = "جاري الضغط الفائق...";
-      statusMsg.innerText = "⚡ جاري ضغط الملف محلياً في جهازك لتقليل حجمه 85% وتسريع الرفع...";
+      statusMsg.innerText = "⚡ جاري ضغط الملف محلياً لتقليل حجمه 85% وتسريع النقل عبر الإنترنت...";
       progressFill.style.width = "20%";
 
       const cs = new CompressionStream('gzip');

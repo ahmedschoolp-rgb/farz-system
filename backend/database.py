@@ -163,6 +163,10 @@ def ensure_utf8_csv(file_path: str) -> tuple[str, Optional[Path]]:
     لتفادي أي خطأ في DuckDB C++ reader وضمان العمل بسرعة C++ القصوى
     """
     try:
+        # إذا كان الملف مضغوطاً، لا نلمسه كملف نصي
+        if file_path.lower().endswith(('.gz', '.zip')):
+            return file_path, None
+
         with open(file_path, 'rb') as f:
             sample = f.read(65536)
 
@@ -186,12 +190,13 @@ def ensure_utf8_csv(file_path: str) -> tuple[str, Optional[Path]]:
         with open(file_path, 'r', encoding=detected_enc, errors='replace') as fin, \
              open(utf8_path, 'w', encoding='utf-8') as fout:
             while True:
-                chunk = fin.read(1024 * 1024)
+                chunk = fin.read(2 * 1024 * 1024)
                 if not chunk:
                     break
                 fout.write(chunk)
         return str(utf8_path), utf8_path
-    except Exception:
+    except Exception as e:
+        print(f"⚠️ [UTF-8 Detection Warning]: {e}")
         return file_path, None
 
 
@@ -240,8 +245,20 @@ def replace_user_dataset(
                 extracted_cleanup = Path(actual_file_path)
                 file_ext = Path(actual_file_path).suffix.lower()
 
-        # معالجة الملفات (CSV / TSV / GZ / TXT) بأقصى سرعة C++ مع محرك DuckDB المباشر
-        if file_ext in ['.csv', '.txt', '.tsv', '.gz'] or actual_file_path.lower().endswith(('.csv.gz', '.tsv.gz', '.txt.gz')):
+        # فك الضغط التلقائي الفائق إذا كان الملف GZ (.gz, .csv.gz, .tsv.gz, .txt.gz)
+        if file_ext == '.gz' or actual_file_path.lower().endswith(('.csv.gz', '.tsv.gz', '.txt.gz')):
+            import gzip
+            decomp_path = Path(actual_file_path).parent / f"decomp_{Path(actual_file_path).stem}"
+            if not decomp_path.name.lower().endswith(('.csv', '.tsv', '.txt')):
+                decomp_path = decomp_path.with_suffix('.csv')
+            with gzip.open(actual_file_path, 'rb') as f_in, open(decomp_path, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out, length=2 * 1024 * 1024)
+            actual_file_path = str(decomp_path)
+            extracted_cleanup = decomp_path
+            file_ext = decomp_path.suffix.lower()
+
+        # معالجة الملفات (CSV / TSV / TXT) بأقصى سرعة C++ مع محرك DuckDB المباشر
+        if file_ext in ['.csv', '.txt', '.tsv']:
             # التحقق من الترميز وتحويله لـ UTF-8 إذا كان ترميز ويندوز عربي قديم لمنع تعطل C++
             read_path, utf8_cleanup = ensure_utf8_csv(actual_file_path)
             safe_path = Path(read_path).as_posix()
@@ -289,6 +306,9 @@ def replace_user_dataset(
                 total_rows = con.execute("SELECT count(*) FROM temp_vehicles;").fetchone()[0]
 
             except Exception as fast_err:
+                print(f"⚠️ [Fast DuckDB Path Warning]: {fast_err}. Switching to safe fallback...")
+                import traceback
+                traceback.print_exc()
                 # مسار بديل آمن (Fallback) عبر الباندا في حال وجود أي تعارض غير متوقع
                 sample_df = pd.read_csv(actual_file_path, nrows=5, index_col=False)
                 cols = [str(c).strip() for c in sample_df.columns]
@@ -363,6 +383,7 @@ def replace_user_dataset(
         con.execute("ALTER TABLE temp_vehicles RENAME TO vehicles;")
 
         elapsed = time.time() - start_time
+        print(f"⚡ [INGEST COMPLETED] Ingested {total_rows:,} records in {elapsed:.2f} seconds!")
 
         # حفظ تاريخ التحديث في جدول بيانات تعريفية
         con.execute("CREATE TABLE IF NOT EXISTS dataset_meta (key VARCHAR PRIMARY KEY, value VARCHAR);")
