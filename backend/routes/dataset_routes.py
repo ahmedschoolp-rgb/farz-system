@@ -48,8 +48,9 @@ async def upload_dataset(
     """
     filename = file.filename
     ext = Path(filename).suffix.lower()
-    if ext not in ['.csv', '.txt', '.tsv', '.xlsx', '.xls']:
-        raise HTTPException(status_code=400, detail="صيغة الملف غير مدعومة. الصيغ المدعومة: CSV, Excel (.xlsx), TXT")
+    is_valid = ext in ['.csv', '.txt', '.tsv', '.xlsx', '.xls', '.gz', '.zip'] or filename.lower().endswith(('.csv.gz', '.tsv.gz', '.txt.gz'))
+    if not is_valid:
+        raise HTTPException(status_code=400, detail="صيغة الملف غير مدعومة. الصيغ المدعومة: CSV, ZIP, GZ, Excel (.xlsx), TXT")
 
     # حفظ الملف مؤقتًا للبدء في المعالجة
     user_upload_dir = UPLOADS_DIR / f"user_{user['id']}"

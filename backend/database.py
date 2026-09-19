@@ -179,51 +179,102 @@ def replace_user_dataset(
 
     try:
         total_rows = 0
-        first_chunk = True
 
-        # معالجة الملفات (CSV / TSV أو Excel)
-        if file_ext in ['.csv', '.txt', '.tsv']:
-            sample_df = pd.read_csv(file_path, nrows=5, index_col=False)
-            cols = [str(c).strip() for c in sample_df.columns]
-            detected = detect_columns(cols)
-            p_col = plate_col or detected['plate']
+        # فك الضغط التلقائي إذا كان الملف ZIP
+        actual_file_path = file_path
+        extracted_cleanup = None
+        if file_ext == '.zip':
+            import zipfile
+            with zipfile.ZipFile(file_path, 'r') as z:
+                target_name = None
+                for name in z.namelist():
+                    if name.lower().endswith(('.csv', '.txt', '.tsv', '.xlsx', '.xls', '.gz')):
+                        target_name = name
+                        break
+                if not target_name:
+                    raise ValueError("الملف المضغوط ZIP لا يحتوي على أي ملف CSV أو Excel مدعوم")
+                z.extract(target_name, path=Path(file_path).parent)
+                actual_file_path = str(Path(file_path).parent / target_name)
+                extracted_cleanup = Path(actual_file_path)
+                file_ext = Path(actual_file_path).suffix.lower()
 
-            chunk_size = 150000
-            for chunk in pd.read_csv(file_path, chunksize=chunk_size, dtype=str, keep_default_na=False, index_col=False):
-                chunk = chunk.reset_index(drop=True)
-                chunk.columns = [str(c).strip() for c in chunk.columns]
-                chunk_len = len(chunk)
-                if chunk_len == 0:
-                    continue
+        # معالجة الملفات (CSV / TSV / GZ / TXT) بأقصى سرعة C++ مع محرك DuckDB المباشر
+        if file_ext in ['.csv', '.txt', '.tsv', '.gz'] or actual_file_path.lower().endswith(('.csv.gz', '.tsv.gz', '.txt.gz')):
+            safe_path = Path(actual_file_path).as_posix()
+            try:
+                # 1. فحص أسماء الأعمدة في سطر الرأس مباشرة
+                sample_cols = [c[0] for c in con.execute(f"SELECT column_name FROM (DESCRIBE SELECT * FROM read_csv_auto('{safe_path}', all_varchar=true));").fetchall()]
+                sample_cols = [str(c).strip() for c in sample_cols]
+                detected = detect_columns(sample_cols)
+                p_col = plate_col or detected['plate']
+                if not p_col or p_col not in sample_cols:
+                    p_col = sample_cols[0]
 
-                raw_plates = chunk[p_col].astype(str) if p_col in chunk else pd.Series([''] * chunk_len)
-                norm_plates = (
-                    raw_plates.str.normalize('NFKC')
-                    .str.translate(DIGIT_TRANSLATION)
-                    .str.replace(CLEANUP_PATTERN, '', regex=True)
-                    .str.lower()
-                    .str.strip()
-                )
+                # تجهيز أعمدة التحديد مع البادئة
+                col_selects = [f'"{c.replace(chr(34), chr(34)*2)}" AS "[السيارة] {c.replace(chr(34), chr(34)*2)}"' for c in sample_cols]
+                norm_regex = r'[\s_\-–—/\\.,;:|!؟?()[\]{}<>"\'`~@#$%^&*+=ـ\x{064b}-\x{065f}\x{0670}\x{200b}-\x{200f}\x{feff}]'
+                escaped_regex = norm_regex.replace("'", "''")
+                escaped_pcol = p_col.replace('"', '""')
 
-                batch_df = chunk.copy()
-                # إضافة بادئة واضحة لكافة أعمدة بيانات السيارة
-                batch_df.columns = [f"[السيارة] {c}" for c in batch_df.columns]
-                batch_df['__veh_id__'] = list(range(total_rows + 1, total_rows + chunk_len + 1))
-                batch_df['__veh_plate_norm__'] = norm_plates
+                # قراءة ومعالجة وتطبيع وتخزين ملايين السجلات في ثوانٍ معدودة عبر C++
+                query = f"""
+                    DROP TABLE IF EXISTS temp_vehicles;
+                    CREATE TABLE temp_vehicles AS
+                    SELECT 
+                        row_number() OVER () AS __veh_id__,
+                        lower(regexp_replace(
+                            translate("{escaped_pcol}", '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹', '01234567890123456789'),
+                            '{escaped_regex}', '', 'g'
+                        )) AS __veh_plate_norm__,
+                        {', '.join(col_selects)}
+                    FROM read_csv_auto('{safe_path}', all_varchar=true);
+                """
+                con.execute(query)
+                total_rows = con.execute("SELECT count(*) FROM temp_vehicles;").fetchone()[0]
 
-                con.register("batch_view", batch_df)
-                if first_chunk:
-                    con.execute("DROP TABLE IF EXISTS temp_vehicles;")
-                    con.execute("CREATE TABLE temp_vehicles AS SELECT * FROM batch_view;")
-                    first_chunk = False
-                else:
-                    con.execute("INSERT INTO temp_vehicles SELECT * FROM batch_view;")
-                con.unregister("batch_view")
+            except Exception as fast_err:
+                # مسار بديل آمن (Fallback) عبر الباندا في حال وجود أي تعارض غير متوقع
+                sample_df = pd.read_csv(actual_file_path, nrows=5, index_col=False)
+                cols = [str(c).strip() for c in sample_df.columns]
+                detected = detect_columns(cols)
+                p_col = plate_col or detected['plate']
 
-                total_rows += chunk_len
+                first_chunk = True
+                total_rows = 0
+                chunk_size = 150000
+                for chunk in pd.read_csv(actual_file_path, chunksize=chunk_size, dtype=str, keep_default_na=False, index_col=False):
+                    chunk = chunk.reset_index(drop=True)
+                    chunk.columns = [str(c).strip() for c in chunk.columns]
+                    chunk_len = len(chunk)
+                    if chunk_len == 0:
+                        continue
+
+                    raw_plates = chunk[p_col].astype(str) if p_col in chunk else pd.Series([''] * chunk_len)
+                    norm_plates = (
+                        raw_plates.str.normalize('NFKC')
+                        .str.translate(DIGIT_TRANSLATION)
+                        .str.replace(CLEANUP_PATTERN, '', regex=True)
+                        .str.lower()
+                        .str.strip()
+                    )
+
+                    batch_df = chunk.copy()
+                    batch_df.columns = [f"[السيارة] {c}" for c in batch_df.columns]
+                    batch_df['__veh_id__'] = list(range(total_rows + 1, total_rows + chunk_len + 1))
+                    batch_df['__veh_plate_norm__'] = norm_plates
+
+                    con.register("batch_view", batch_df)
+                    if first_chunk:
+                        con.execute("DROP TABLE IF EXISTS temp_vehicles;")
+                        con.execute("CREATE TABLE temp_vehicles AS SELECT * FROM batch_view;")
+                        first_chunk = False
+                    else:
+                        con.execute("INSERT INTO temp_vehicles SELECT * FROM batch_view;")
+                    con.unregister("batch_view")
+                    total_rows += chunk_len
 
         elif file_ext in ['.xlsx', '.xls']:
-            df = pd.read_excel(file_path, dtype=str, keep_default_na=False).reset_index(drop=True)
+            df = pd.read_excel(actual_file_path, dtype=str, keep_default_na=False).reset_index(drop=True)
             df.columns = [str(c).strip() for c in df.columns]
             total_rows = len(df)
             detected = detect_columns(list(df.columns))
@@ -250,6 +301,13 @@ def replace_user_dataset(
 
         else:
             raise ValueError(f"صيغة الملف غير مدعومة: {file_ext}")
+
+        # تنظيف الملف المفكوك مؤقتاً إن وجد
+        if extracted_cleanup and extracted_cleanup.exists():
+            try:
+                os.remove(extracted_cleanup)
+            except Exception:
+                pass
 
         # استبدال الجدول القديم بالجديد ذريًا (Atomic Swap)
         con.execute("DROP TABLE IF EXISTS vehicles;")

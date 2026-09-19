@@ -3,6 +3,7 @@
 (Full Dynamic Columns Verification Test)
 """
 
+import os
 import sys
 import unittest
 import duckdb
@@ -167,6 +168,32 @@ class TestDynamicColumns(unittest.TestCase):
 
         # لا يوجد أي عمود مفقود
         self.assertEqual(len(ordered), len(veh_cols) + len(ref_cols) + 1)
+
+    def test_compressed_gzip_and_zip_ingestion(self):
+        import gzip
+        import zipfile
+        import tempfile
+        from backend.database import replace_user_dataset, get_user_duckdb_path
+
+        src_csv = "data/samples/sample_vehicles_daily.csv"
+        
+        # 1. اختبار ملف .csv.gz
+        gz_path = os.path.join(tempfile.gettempdir(), "test_vehicles.csv.gz")
+        with open(src_csv, "rb") as f_in, gzip.open(gz_path, "wb") as f_out:
+            f_out.write(f_in.read())
+
+        res_gz = replace_user_dataset(777, gz_path)
+        self.assertTrue(res_gz["success"])
+        self.assertEqual(res_gz["total_records"], 6)
+
+        # 2. اختبار ملف .zip
+        zip_path = os.path.join(tempfile.gettempdir(), "test_vehicles.zip")
+        with zipfile.ZipFile(zip_path, "w") as z:
+            z.write(src_csv, arcname="sample_vehicles.csv")
+
+        res_zip = replace_user_dataset(778, zip_path)
+        self.assertTrue(res_zip["success"])
+        self.assertEqual(res_zip["total_records"], 6)
 
 
 if __name__ == '__main__':
