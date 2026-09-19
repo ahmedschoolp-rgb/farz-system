@@ -350,30 +350,81 @@ def replace_user_dataset(
                     total_rows += chunk_len
 
         elif file_ext in ['.xlsx', '.xls']:
-            df = pd.read_excel(actual_file_path, dtype=str, keep_default_na=False).reset_index(drop=True)
-            df.columns = [str(c).strip() for c in df.columns]
-            total_rows = len(df)
-            detected = detect_columns(list(df.columns))
-            p_col = plate_col or detected['plate']
+            try:
+                # محاولة القراءة والمعالجة فائقة السرعة عبر امتداد DuckDB Excel C++ المباشر
+                try:
+                    con.execute("LOAD excel;")
+                except Exception:
+                    con.execute("INSTALL excel; LOAD excel;")
 
-            raw_plates = df[p_col].astype(str) if p_col in df else pd.Series([''] * total_rows)
-            norm_plates = (
-                raw_plates.str.normalize('NFKC')
-                .str.translate(DIGIT_TRANSLATION)
-                .str.replace(CLEANUP_PATTERN, '', regex=True)
-                .str.lower()
-                .str.strip()
-            )
+                safe_path = Path(actual_file_path).as_posix()
+                sample_cols = [c[0] for c in con.execute(f"SELECT column_name FROM (DESCRIBE SELECT * FROM read_xlsx('{safe_path}', all_varchar=true));").fetchall()]
+                sample_cols = [str(c).strip() for c in sample_cols]
+                detected = detect_columns(sample_cols)
+                p_col = plate_col or detected['plate']
+                if not p_col or p_col not in sample_cols:
+                    p_col = sample_cols[0]
 
-            batch_df = df.copy()
-            batch_df.columns = [f"[السيارة] {c}" for c in batch_df.columns]
-            batch_df['__veh_id__'] = list(range(1, total_rows + 1))
-            batch_df['__veh_plate_norm__'] = norm_plates
+                col_selects = []
+                seen_cols = set()
+                for i, c in enumerate(sample_cols):
+                    clean_name = c if c else f"col_{i+1}"
+                    unique_target = clean_name
+                    idx = 2
+                    while unique_target in seen_cols:
+                        unique_target = f"{clean_name}_{idx}"
+                        idx += 1
+                    seen_cols.add(unique_target)
+                    col_selects.append(f'"{c.replace(chr(34), chr(34)*2)}" AS "[السيارة] {unique_target.replace(chr(34), chr(34)*2)}"')
 
-            con.register("batch_view", batch_df)
-            con.execute("DROP TABLE IF EXISTS temp_vehicles;")
-            con.execute("CREATE TABLE temp_vehicles AS SELECT * FROM batch_view;")
-            con.unregister("batch_view")
+                norm_regex = r'[\s_\-–—/\\.,;:|!؟?()[\]{}<>"\'`~@#$%^&*+=ـ\x{064b}-\x{065f}\x{0670}\x{200b}-\x{200f}\x{feff}]'
+                escaped_regex = norm_regex.replace("'", "''")
+                escaped_pcol = p_col.replace('"', '""')
+
+                query = f"""
+                    DROP TABLE IF EXISTS temp_vehicles;
+                    CREATE TABLE temp_vehicles AS
+                    SELECT 
+                        row_number() OVER () AS __veh_id__,
+                        lower(regexp_replace(
+                            translate("{escaped_pcol}", '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷٨٩', '01234567890123456789'),
+                            '{escaped_regex}', '', 'g'
+                        )) AS __veh_plate_norm__,
+                        {', '.join(col_selects)}
+                    FROM read_xlsx('{safe_path}', all_varchar=true);
+                """
+                con.execute(query)
+                total_rows = con.execute("SELECT count(*) FROM temp_vehicles;").fetchone()[0]
+
+            except Exception as excel_fast_err:
+                print(f"⚠️ [Fast Excel DuckDB Warning]: {excel_fast_err}. Switching to pandas fallback...")
+                import traceback
+                traceback.print_exc()
+
+                df = pd.read_excel(actual_file_path, dtype=str, keep_default_na=False).reset_index(drop=True)
+                df.columns = [str(c).strip() for c in df.columns]
+                total_rows = len(df)
+                detected = detect_columns(list(df.columns))
+                p_col = plate_col or detected['plate']
+
+                raw_plates = df[p_col].astype(str) if p_col in df else pd.Series([''] * total_rows)
+                norm_plates = (
+                    raw_plates.str.normalize('NFKC')
+                    .str.translate(DIGIT_TRANSLATION)
+                    .str.replace(CLEANUP_PATTERN, '', regex=True)
+                    .str.lower()
+                    .str.strip()
+                )
+
+                batch_df = df.copy()
+                batch_df.columns = [f"[السيارة] {c}" for c in batch_df.columns]
+                batch_df['__veh_id__'] = list(range(1, total_rows + 1))
+                batch_df['__veh_plate_norm__'] = norm_plates
+
+                con.register("batch_view", batch_df)
+                con.execute("DROP TABLE IF EXISTS temp_vehicles;")
+                con.execute("CREATE TABLE temp_vehicles AS SELECT * FROM batch_view;")
+                con.unregister("batch_view")
 
         else:
             raise ValueError(f"صيغة الملف غير مدعومة: {file_ext}")

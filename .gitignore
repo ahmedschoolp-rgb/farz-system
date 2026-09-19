@@ -11,5 +11,9 @@ data/exports/*.csv
 !data/samples/*
 data/uploads/*
 data/users/*/dataset.duckdb*
+*.xlsx
+*.csv
+!data/samples/*.csv
+!data/samples/*.xlsx
 .DS_Store
 Thumbs.db
