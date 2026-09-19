@@ -17,12 +17,13 @@ import time
 import json
 import os
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 import duckdb
 import pandas as pd
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
 
 from backend.config import EXPORTS_DIR
 from backend.normalization import normalize_plate, DIGIT_TRANSLATION, CLEANUP_PATTERN
@@ -133,14 +134,14 @@ def order_matching_columns(veh_cols: List[str], ref_cols: List[str]) -> List[tup
 
 def match_referral_file(
     user_id: int,
-    file_path: str,
+    file_path: Union[str, Path, List[Union[str, Path]]],
     plate_col: Optional[str] = None,
     chassis_col: Optional[str] = None,
     client_col: Optional[str] = None,
     bank_col: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    تنفيذ مطابقة ملف الإحالة ضد قاعدة بيانات المستخدم الحالية (2M سجل)
+    تنفيذ مطابقة ملف أو ملفات الإحالة ضد قاعدة بيانات المستخدم الحالية (2M سجل)
     مع الترتيب المنطقي الدقيق وحصر النتائج على المتطابق فقط وتنظيف كافة المسميات
     """
     start_time = time.time()
@@ -148,18 +149,34 @@ def match_referral_file(
     if not db_path.exists():
         raise FileNotFoundError("لم يتم العثور على قاعدة بيانات نشطة لهذا المستخدم. يرجى رفع ملف البيانات أولاً.")
 
-    file_ext = Path(file_path).suffix.lower()
+    # تجهيز قائمة الملفات
+    file_list = file_path if isinstance(file_path, (list, tuple)) else [file_path]
+    dfs = []
 
-    # 1. قراءة ملف الإحالة بالكامل مع كافة الأعمدة
-    if file_ext in ['.xlsx', '.xls']:
-        ref_df = pd.read_excel(file_path, dtype=str, keep_default_na=False).reset_index(drop=True)
-    elif file_ext in ['.csv', '.txt', '.tsv']:
-        ref_df = pd.read_csv(file_path, dtype=str, keep_default_na=False, index_col=False).reset_index(drop=True)
-    else:
-        raise ValueError(f"صيغة ملف الإحالة غير مدعومة: {file_ext}")
+    for f_item in file_list:
+        p = Path(f_item)
+        if not p.exists():
+            continue
+        file_ext = p.suffix.lower()
 
-    total_referral_rows = len(ref_df)
-    if total_referral_rows == 0:
+        # قراءة ملف الإحالة بالكامل مع كافة الأعمدة
+        if file_ext in ['.xlsx', '.xls']:
+            sub_df = pd.read_excel(p, dtype=str, keep_default_na=False).reset_index(drop=True)
+        elif file_ext in ['.csv', '.txt', '.tsv']:
+            try:
+                sub_df = pd.read_csv(p, dtype=str, keep_default_na=False, index_col=False, encoding='utf-8').reset_index(drop=True)
+            except Exception:
+                sub_df = pd.read_csv(p, dtype=str, keep_default_na=False, index_col=False, encoding='latin1').reset_index(drop=True)
+        else:
+            continue
+
+        if len(sub_df) > 0:
+            sub_df.columns = [str(c).strip() for c in sub_df.columns]
+            if len(file_list) > 1:
+                sub_df['ملف الإحالة'] = p.name
+            dfs.append(sub_df)
+
+    if not dfs:
         return {
             "success": True,
             "total_referrals": 0,
@@ -173,13 +190,16 @@ def match_referral_file(
             "records": []
         }
 
+    # دمج كافة ملفات الإحالة في DataFrame موحد
+    ref_df = pd.concat(dfs, ignore_index=True)
+    total_referral_rows = len(ref_df)
+
     # تنظيف أسماء الأعمدة واكتشاف عمود اللوحة
-    ref_df.columns = [str(c).strip() for c in ref_df.columns]
     detected = detect_columns(list(ref_df.columns))
     p_col = plate_col or detected['plate']
 
     if not p_col or p_col not in ref_df.columns:
-        raise ValueError(f"تعذر تحديد عمود اللوحة في ملف الإحالة. الأعمدة المتوفرة: {list(ref_df.columns)}")
+        raise ValueError(f"تعذر تحديد عمود اللوحة في ملفات الإحالة المرفوعة. الأعمدة المتوفرة: {list(ref_df.columns)}")
 
     # 2. تطبيع لوحات الإحالة وتجهيز الأعمدة مع بادئة واضحة
     norm_plates = (
@@ -385,20 +405,25 @@ def export_match_results(user_id: int, file_format: str = 'xlsx', filter_status:
         df.to_csv(out_path, index=False, encoding='utf-8-sig')
         return str(out_path)
 
-    # تصدير Excel منسق واحترافي
+    # تصدير Excel منسق واحترافي كجدول رسمي بخط واضح وثقيل
     out_filename = f"matching_result_ordered_{user_id}_{timestamp}.xlsx"
     out_path = EXPORTS_DIR / out_filename
 
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "نتائج المطابقة المرتبة"
+    ws.title = "نتائج المطابقة"
     ws.views.sheetView[0].rightToLeft = True
+    ws.sheet_properties.tabColor = "2563EB"
 
     headers = list(df.columns)
     ws.append(headers)
 
-    header_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
     header_font = Font(name="Segoe UI", size=11, bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
+
+    # خط واضح وتقيل للبيانات
+    data_font = Font(name="Segoe UI", size=11, bold=True, color="0F172A")
+
     thin_border = Border(
         left=Side(style='thin', color='CBD5E1'),
         right=Side(style='thin', color='CBD5E1'),
@@ -410,34 +435,60 @@ def export_match_results(user_id: int, file_format: str = 'xlsx', filter_status:
         cell = ws.cell(row=1, column=col_idx)
         cell.fill = header_fill
         cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         cell.border = thin_border
 
     matched_fill = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")
-    unmatched_fill = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
     multiple_fill = PatternFill(start_color="DBEAFE", end_color="DBEAFE", fill_type="solid")
-    data_font = Font(name="Segoe UI", size=10)
+    unmatched_fill = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
 
     for row_idx, row in enumerate(df.itertuples(index=False), 2):
-        status = str(row[0])
-        row_fill = matched_fill if status == 'متطابق' else (multiple_fill if status == 'تطابق متعدد' else unmatched_fill)
+        ws.row_dimensions[row_idx].height = 24
+        status = str(row[0]) if len(row) > 0 else ''
+        status_fill = matched_fill if status == 'متطابق' else (multiple_fill if status == 'تطابق متعدد' else unmatched_fill)
 
         for col_idx, value in enumerate(row, 1):
             val_str = "" if pd.isna(value) else str(value)
             cell = ws.cell(row=row_idx, column=col_idx, value=val_str)
             cell.font = data_font
             cell.border = thin_border
-            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+            # محاذاة متناسقة تمنع التداخل
             if col_idx == 1:
-                cell.fill = row_fill
-                cell.font = Font(name="Segoe UI", size=10, bold=True)
+                cell.fill = status_fill
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            elif any(k in headers[col_idx-1] for k in ['اللوحة', 'تاريخ', 'شاص', 'عقد', 'هاتف', 'رقم']):
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            else:
+                cell.alignment = Alignment(horizontal="right", vertical="center")
 
-    for col in ws.columns:
-        max_len = max(len(str(cell.value or '')) for cell in col)
-        col_letter = get_column_letter(col[0].column)
-        ws.column_dimensions[col_letter].width = max(max_len + 4, 15)
+    # حساب أبعاد الأعمدة بدقة مع هوامش تمنع التداخل أو القص
+    for col_idx, col in enumerate(ws.columns, 1):
+        max_len = 0
+        for cell in col:
+            val = str(cell.value or '')
+            w = sum(1.3 if ord(ch) > 127 else 1.0 for ch in val)
+            if w > max_len:
+                max_len = w
+        col_letter = get_column_letter(col_idx)
+        ws.column_dimensions[col_letter].width = min(max(max_len + 4, 18), 45)
 
-    ws.row_dimensions[1].height = 28
+    ws.row_dimensions[1].height = 32
+
+    # إنشاء جدول Excel رسمي (Excel Table) مع فلاتر وأسهم مدمجة
+    if len(df) > 0:
+        last_col = get_column_letter(len(headers))
+        last_row = len(df) + 1
+        tab = Table(displayName="VehicleMatchesTable", ref=f"A1:{last_col}{last_row}")
+        tab.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium9",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False
+        )
+        ws.add_table(tab)
+
     wb.save(out_path)
     return str(out_path)
 
@@ -469,28 +520,44 @@ def quick_search_single_plate(user_id: int, query_plate: str) -> List[Dict[str, 
 
 
 def parse_geo_coordinates(loc_str: str) -> Optional[tuple[float, float]]:
-    """استخراج إحداثيات خط الطول والعرض من أي رابط أو نص موقع"""
+    """استخراج إحداثيات خط الطول والعرض من أي رابط أو نص موقع حقيقي فقط"""
     if not loc_str or not isinstance(loc_str, str):
         return None
+    loc_str = loc_str.strip()
+    if not loc_str:
+        return None
+
     import re
-    match = re.search(r'([-+]?\d{1,2}\.\d+)\s*,\s*([-+]?\d{1,3}\.\d+)', loc_str)
+    # 1. إحداثيات صريحة: 24.7136, 46.6753
+    match = re.search(r'([-+]?\d{1,2}\.\d+)\s*[,|\s]\s*([-+]?\d{1,3}\.\d+)', loc_str)
     if match:
         try:
             lat = float(match.group(1))
             lng = float(match.group(2))
-            if -90 <= lat <= 90 and -180 <= lng <= 180:
+            if -90 <= lat <= 90 and -180 <= lng <= 180 and not (lat == 0.0 and lng == 0.0):
                 return lat, lng
         except ValueError:
             pass
+
+    # 2. روابط خرائط جوجل مع بارامتر q أو query أو ll أو @
+    match_url = re.search(r'[?&](?:q|query|ll|loc)=([-+]?\d{1,2}\.\d+),([-+]?\d{1,3}\.\d+)', loc_str)
+    if match_url:
+        try:
+            lat = float(match_url.group(1))
+            lng = float(match_url.group(2))
+            if -90 <= lat <= 90 and -180 <= lng <= 180 and not (lat == 0.0 and lng == 0.0):
+                return lat, lng
+        except ValueError:
+            pass
+
     return None
 
 
 def get_match_map_points(user_id: int) -> List[Dict[str, Any]]:
     """
-    استرجاع بيانات وتحديد مواقع السيارات المتطابقة لعرضها على الخريطة التفاعلية
-    مع استخراج الإحداثيات الجغرافية بدقة
+    استرجاع بيانات ومواقع السيارات المتطابقة التي تملك موقعاً أو إحداثيات حقيقية فقط
+    (استبعاد تام لأي سيارة لا تملك موقعاً حقيقياً لعدم تضليل المستخدم)
     """
-    import hashlib
     db_path = get_user_duckdb_path(user_id)
     if not db_path.exists():
         return []
@@ -502,41 +569,31 @@ def get_match_map_points(user_id: int) -> List[Dict[str, Any]]:
             return []
 
         df = con.execute("SELECT * FROM last_match WHERE __is_matched__ = 1 LIMIT 500;").df().fillna('')
-        
+
         points = []
         for idx, row in df.iterrows():
             loc_val = str(row.get('الموقع', '') or row.get('رابط الموقع', '') or '')
             coords = parse_geo_coordinates(loc_val)
-            is_real = True
-            
-            if coords:
-                lat, lng = coords
-            else:
-                # في حال عدم توفر إحداثيات صريحة في الرابط، توزيع الإحداثيات افتراضياً حول الرياض للمعاينة المباشرة
-                plate_seed = str(row.get('اللوحة', '') or f"seed_{idx}")
-                h = int(hashlib.md5(plate_seed.encode('utf-8')).hexdigest()[:6], 16)
-                offset_lat = ((h % 500) - 250) * 0.0004
-                offset_lng = (((h // 500) % 500) - 250) * 0.0004
-                lat = round(24.7136 + offset_lat, 6)
-                lng = round(46.6753 + offset_lng, 6)
-                is_real = False
 
-            points.append({
-                "id": int(row.get('__row_id__', idx + 1)),
-                "plate": str(row.get('اللوحة', '')),
-                "ref_plate": str(row.get('لوحة الإحالة', '')),
-                "status": str(row.get('حالة المطابقة', 'متطابق')),
-                "type": str(row.get('النوع', '') or row.get('طراز الإحالة', '') or ''),
-                "client": str(row.get('اسم العميل', '')),
-                "street": str(row.get('الشارع', '')),
-                "district": str(row.get('الحي', '')),
-                "date": str(row.get('التاريخ', '')),
-                "location_raw": loc_val,
-                "lat": lat,
-                "lng": lng,
-                "is_real_coords": is_real
-            })
-            
+            # إدراج السيارة فقط إذا كانت تملك إحداثيات حقيقية مستخرجة
+            if coords is not None:
+                lat, lng = coords
+                points.append({
+                    "id": int(row.get('__row_id__', idx + 1)),
+                    "plate": str(row.get('اللوحة', '')),
+                    "ref_plate": str(row.get('لوحة الإحالة', '')),
+                    "status": str(row.get('حالة المطابقة', 'متطابق')),
+                    "type": str(row.get('النوع', '') or row.get('طراز الإحالة', '') or ''),
+                    "client": str(row.get('اسم العميل', '')),
+                    "street": str(row.get('الشارع', '')),
+                    "district": str(row.get('الحي', '')),
+                    "date": str(row.get('التاريخ', '')),
+                    "location_raw": loc_val,
+                    "lat": lat,
+                    "lng": lng,
+                    "is_real_coords": True
+                })
+
         return points
     finally:
         con.close()
