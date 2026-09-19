@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    container_name: farz_vehicle_system
+    restart: always
+    ports:
+      - "80:8000"       # فتح الموقع مباشرة على المنفذ 80 (بدون كتابة :8000 في الرابط)
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data  # حفظ قواعد البيانات والملفات بشكل دائم على قرص السيرفر
+    environment:
+      - PYTHONUNBUFFERED=1
+      - APP_PORT=8000
+    deploy:
+      resources:
+        limits:
+          memory: 12G

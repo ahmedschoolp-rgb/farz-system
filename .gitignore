@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+data/exports/*.xlsx
+data/exports/*.csv
+!data/samples/*
+data/uploads/*
+data/users/*/dataset.duckdb*
+.DS_Store
+Thumbs.db

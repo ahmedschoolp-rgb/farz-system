@@ -1,0 +1,14 @@
+{
+  "name": "Vehicle Matching System",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "forwardPorts": [8000],
+  "portsAttributes": {
+    "8000": {
+      "label": "Vehicle Matching System App",
+      "onAutoForward": "openBrowser",
+      "visibility": "public"
+    }
+  },
+  "postCreateCommand": "pip install -r requirements.txt",
+  "postStartCommand": "python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000"
+}
