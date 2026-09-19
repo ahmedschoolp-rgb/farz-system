@@ -157,6 +157,44 @@ def detect_columns(columns: List[str]) -> Dict[str, Optional[str]]:
     return detected
 
 
+def ensure_utf8_csv(file_path: str) -> tuple[str, Optional[Path]]:
+    """
+    التحقق الفوري من ترميز الملف (UTF-8, Windows-1256, UTF-16) وتحويله في أجزاء من الثانية لـ UTF-8
+    لتفادي أي خطأ في DuckDB C++ reader وضمان العمل بسرعة C++ القصوى
+    """
+    try:
+        with open(file_path, 'rb') as f:
+            sample = f.read(65536)
+
+        if sample.startswith(b'\xef\xbb\xbf'):
+            return file_path, None
+
+        try:
+            sample.decode('utf-8')
+            return file_path, None
+        except UnicodeDecodeError:
+            pass
+
+        # الكشف عن الترميز الشائع في ويندوز وإكسل العربي (CP1256)
+        detected_enc = 'cp1256'
+        try:
+            sample.decode('cp1256')
+        except UnicodeDecodeError:
+            detected_enc = 'latin1'
+
+        utf8_path = Path(file_path).parent / f"utf8_{Path(file_path).name}"
+        with open(file_path, 'r', encoding=detected_enc, errors='replace') as fin, \
+             open(utf8_path, 'w', encoding='utf-8') as fout:
+            while True:
+                chunk = fin.read(1024 * 1024)
+                if not chunk:
+                    break
+                fout.write(chunk)
+        return str(utf8_path), utf8_path
+    except Exception:
+        return file_path, None
+
+
 def replace_user_dataset(
     user_id: int, 
     file_path: str, 
@@ -167,22 +205,26 @@ def replace_user_dataset(
 ) -> Dict[str, Any]:
     """
     استبدال قاعدة بيانات السيارات بالكامل للمستخدم (Active Dataset Replacement)
-    تحميل حتى 2,000,000+ سجل وبناء الفهارس في ثوانٍ معدودة.
+    تحميل حتى 2,000,000+ سجل في ثوانٍ معدودة عبر نواة DuckDB C++ المباشرة.
     الاستبدال يتم بشكل ذري (Atomic) لمنع تلف البيانات.
     """
     start_time = time.time()
     db_path = get_user_duckdb_path(user_id)
     file_ext = Path(file_path).suffix.lower()
 
-    # إنشاء اتصال بقاعدة المستخدم
+    # إنشاء اتصال بقاعدة المستخدم وضبط الأداء المتوازي
     con = duckdb.connect(str(db_path))
+    con.execute("PRAGMA threads=8;")
+    con.execute("PRAGMA preserve_insertion_order=false;")
+
+    actual_file_path = file_path
+    extracted_cleanup = None
+    utf8_cleanup = None
 
     try:
         total_rows = 0
 
         # فك الضغط التلقائي إذا كان الملف ZIP
-        actual_file_path = file_path
-        extracted_cleanup = None
         if file_ext == '.zip':
             import zipfile
             with zipfile.ZipFile(file_path, 'r') as z:
@@ -200,18 +242,32 @@ def replace_user_dataset(
 
         # معالجة الملفات (CSV / TSV / GZ / TXT) بأقصى سرعة C++ مع محرك DuckDB المباشر
         if file_ext in ['.csv', '.txt', '.tsv', '.gz'] or actual_file_path.lower().endswith(('.csv.gz', '.tsv.gz', '.txt.gz')):
-            safe_path = Path(actual_file_path).as_posix()
+            # التحقق من الترميز وتحويله لـ UTF-8 إذا كان ترميز ويندوز عربي قديم لمنع تعطل C++
+            read_path, utf8_cleanup = ensure_utf8_csv(actual_file_path)
+            safe_path = Path(read_path).as_posix()
+
             try:
                 # 1. فحص أسماء الأعمدة في سطر الرأس مباشرة
-                sample_cols = [c[0] for c in con.execute(f"SELECT column_name FROM (DESCRIBE SELECT * FROM read_csv_auto('{safe_path}', all_varchar=true));").fetchall()]
+                sample_cols = [c[0] for c in con.execute(f"SELECT column_name FROM (DESCRIBE SELECT * FROM read_csv_auto('{safe_path}', all_varchar=true, ignore_errors=true, null_padding=true));").fetchall()]
                 sample_cols = [str(c).strip() for c in sample_cols]
                 detected = detect_columns(sample_cols)
                 p_col = plate_col or detected['plate']
                 if not p_col or p_col not in sample_cols:
                     p_col = sample_cols[0]
 
-                # تجهيز أعمدة التحديد مع البادئة
-                col_selects = [f'"{c.replace(chr(34), chr(34)*2)}" AS "[السيارة] {c.replace(chr(34), chr(34)*2)}"' for c in sample_cols]
+                # تجهيز أعمدة التحديد مع ضمان فرادة الأسماء وتجنب أخطاء تكرار الأعمدة
+                col_selects = []
+                seen_cols = set()
+                for i, c in enumerate(sample_cols):
+                    clean_name = c if c else f"col_{i+1}"
+                    unique_target = clean_name
+                    idx = 2
+                    while unique_target in seen_cols:
+                        unique_target = f"{clean_name}_{idx}"
+                        idx += 1
+                    seen_cols.add(unique_target)
+                    col_selects.append(f'"{c.replace(chr(34), chr(34)*2)}" AS "[السيارة] {unique_target.replace(chr(34), chr(34)*2)}"')
+
                 norm_regex = r'[\s_\-–—/\\.,;:|!؟?()[\]{}<>"\'`~@#$%^&*+=ـ\x{064b}-\x{065f}\x{0670}\x{200b}-\x{200f}\x{feff}]'
                 escaped_regex = norm_regex.replace("'", "''")
                 escaped_pcol = p_col.replace('"', '""')
@@ -223,11 +279,11 @@ def replace_user_dataset(
                     SELECT 
                         row_number() OVER () AS __veh_id__,
                         lower(regexp_replace(
-                            translate("{escaped_pcol}", '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹', '01234567890123456789'),
+                            translate("{escaped_pcol}", '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷٨٩', '01234567890123456789'),
                             '{escaped_regex}', '', 'g'
                         )) AS __veh_plate_norm__,
                         {', '.join(col_selects)}
-                    FROM read_csv_auto('{safe_path}', all_varchar=true);
+                    FROM read_csv_auto('{safe_path}', all_varchar=true, ignore_errors=true, null_padding=true);
                 """
                 con.execute(query)
                 total_rows = con.execute("SELECT count(*) FROM temp_vehicles;").fetchone()[0]
@@ -241,7 +297,7 @@ def replace_user_dataset(
 
                 first_chunk = True
                 total_rows = 0
-                chunk_size = 150000
+                chunk_size = 200000
                 for chunk in pd.read_csv(actual_file_path, chunksize=chunk_size, dtype=str, keep_default_na=False, index_col=False):
                     chunk = chunk.reset_index(drop=True)
                     chunk.columns = [str(c).strip() for c in chunk.columns]
@@ -302,21 +358,9 @@ def replace_user_dataset(
         else:
             raise ValueError(f"صيغة الملف غير مدعومة: {file_ext}")
 
-        # تنظيف الملف المفكوك مؤقتاً إن وجد
-        if extracted_cleanup and extracted_cleanup.exists():
-            try:
-                os.remove(extracted_cleanup)
-            except Exception:
-                pass
-
         # استبدال الجدول القديم بالجديد ذريًا (Atomic Swap)
         con.execute("DROP TABLE IF EXISTS vehicles;")
         con.execute("ALTER TABLE temp_vehicles RENAME TO vehicles;")
-
-        # بناء الفهرس فائق السرعة على عمود اللوحة المطبعة بعد التسمية
-        index_start = time.time()
-        con.execute("CREATE INDEX IF NOT EXISTS idx_norm_plate ON vehicles(__veh_plate_norm__);")
-        index_time = time.time() - index_start
 
         elapsed = time.time() - start_time
 
@@ -329,11 +373,22 @@ def replace_user_dataset(
             "success": True,
             "total_records": total_rows,
             "elapsed_seconds": round(elapsed, 2),
-            "index_seconds": round(index_time, 2),
+            "index_seconds": 0.0,
             "last_updated": now_str
         }
 
     finally:
+        # تنظيف الملفات المؤقتة إن وجدت
+        if extracted_cleanup and extracted_cleanup.exists():
+            try:
+                os.remove(extracted_cleanup)
+            except Exception:
+                pass
+        if utf8_cleanup and utf8_cleanup.exists():
+            try:
+                os.remove(utf8_cleanup)
+            except Exception:
+                pass
         con.close()
 
 

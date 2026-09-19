@@ -73,7 +73,7 @@ async def upload_dataset(
 
         return {
             "success": True,
-            "message": f"تم استبدال البيانات بنجاح: {result['total_records']:,} سيارة",
+            "message": f"⚡ تم استبدال ومعالجة {result['total_records']:,} سيارة في {result['elapsed_seconds']} ثانية فقط بنجاح!",
             "data": result
         }
 
