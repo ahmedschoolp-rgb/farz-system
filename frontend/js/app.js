@@ -593,14 +593,68 @@ function renderPagination(pageData) {
   if (nextBtn) nextBtn.disabled = pageData.page >= pageData.pages;
 }
 
-// تصدير النتائج
-function triggerExport(format) {
-  const query = new URLSearchParams({
-    format: format,
-    filter_status: state.currentFilter
-  });
-  window.location.href = `/api/referral/export?${query.toString()}`;
-  showToast(`جاري تجهيز وتحميل ملف الـ ${format.toUpperCase()} الشامل لكافة البيانات...`, "info");
+// تصدير النتائج بأمان مع الحفاظ على رمز المصادقة والتحميل المباشر
+async function triggerExport(format) {
+  if (!state.token) {
+    showToast("يرجى تسجيل الدخول أولاً لتصدير النتائج", "warning");
+    return;
+  }
+
+  showToast(`جاري تجهيز وتحميل ملف الـ ${format.toUpperCase()} الشامل...`, "info");
+
+  try {
+    const query = new URLSearchParams({
+      format: format,
+      filter_status: state.currentFilter,
+      token: state.token
+    });
+
+    const res = await fetch(`/api/referral/export?${query.toString()}`, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${state.token}`
+      }
+    });
+
+    if (!res.ok) {
+      let errorMsg = "فشل تحميل الملف";
+      try {
+        const err = await res.json();
+        if (err && err.detail) errorMsg = err.detail;
+      } catch (_) {}
+      showToast(errorMsg, "error");
+      return;
+    }
+
+    const blob = await res.blob();
+    const blobUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.style.display = "none";
+    a.href = blobUrl;
+
+    let filename = `نتائج_المطابقة_${state.currentFilter}_${new Date().toISOString().slice(0, 10)}.${format}`;
+    const disposition = res.headers.get("Content-Disposition");
+    if (disposition && disposition.includes("filename=")) {
+      const match = disposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+      if (match && match[1]) {
+        filename = decodeURIComponent(match[1].replace(/['"]/g, ""));
+      }
+    }
+
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+
+    setTimeout(() => {
+      window.URL.revokeObjectURL(blobUrl);
+      a.remove();
+    }, 1000);
+
+    showToast(`تم تحميل ملف الـ ${format.toUpperCase()} بنجاح ✅`, "success");
+  } catch (err) {
+    console.error("Export error:", err);
+    showToast("حدث خطأ أثناء تحميل الملف، يرجى المحاولة لاحقاً", "error");
+  }
 }
 
 // تنفيذ البحث السريع المنفرد عن لوحة مع عرض كافة أعمدة السيارة

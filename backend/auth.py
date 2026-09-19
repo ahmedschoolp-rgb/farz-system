@@ -6,7 +6,7 @@ import sqlite3
 import secrets
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
-from fastapi import HTTPException, Security, Depends
+from fastapi import HTTPException, Security, Depends, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from backend.config import SYSTEM_DB_PATH, SESSION_EXPIRY_HOURS
@@ -87,12 +87,20 @@ def destroy_session(token: str):
     conn.close()
 
 
-def get_current_active_user(credentials: Optional[HTTPAuthorizationCredentials] = Security(security_bearer)) -> Dict[str, Any]:
-    """Dependency لـ FastAPI للتحقق من هوية المستخدم في كل طلب"""
-    if not credentials:
+def get_current_active_user(
+    token_query: Optional[str] = Query(None, alias="token"),
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(security_bearer)
+) -> Dict[str, Any]:
+    """Dependency لـ FastAPI للتحقق من هوية المستخدم في كل طلب (يدعم كلاً من Header و Query Param)"""
+    token = None
+    if credentials and credentials.credentials:
+        token = credentials.credentials
+    elif token_query:
+        token = token_query
+
+    if not token:
         raise HTTPException(status_code=401, detail="لم يتم توفير رمز المصادقة. يرجى تسجيل الدخول.")
 
-    token = credentials.credentials
     user = validate_session(token)
     if not user:
         raise HTTPException(status_code=401, detail="انتهت صلاحية الجلسة أو الرمز غير صالح.")
