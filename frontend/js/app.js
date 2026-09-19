@@ -561,8 +561,23 @@ function renderTableRows(records, columns) {
     }).join("");
 
     const safePlate = String(rowPlate).replace(/'/g, "\\'");
-    // يظهر زر الخريطة فقط إذا كانت السيارة تملك إحداثيات حقيقية مسجلة
-    const hasRealMapCoords = state.carMarkersMap && state.carMarkersMap.has(cleanPlateKey);
+    const normPlate = cleanPlateKey.replace(/\s+/g, '');
+    const refPlate = String(r['لوحة الإحالة'] || '').trim();
+    const refPlateNorm = refPlate.replace(/\s+/g, '');
+    const vehPlate = String(r['اللوحة'] || '').trim();
+    const vehPlateNorm = vehPlate.replace(/\s+/g, '');
+
+    // يظهر زر الخريطة إذا كانت السيارة تملك إحداثيات حقيقية مسجلة بأي صيغة
+    const hasRealMapCoords = Boolean(
+      state.carMarkersMap && (
+        state.carMarkersMap.has(cleanPlateKey) ||
+        state.carMarkersMap.has(normPlate) ||
+        (refPlate && state.carMarkersMap.has(refPlate)) ||
+        (refPlateNorm && state.carMarkersMap.has(refPlateNorm)) ||
+        (vehPlate && state.carMarkersMap.has(vehPlate)) ||
+        (vehPlateNorm && state.carMarkersMap.has(vehPlateNorm))
+      )
+    );
     let mapActionTd = "";
     if (hasRealMapCoords) {
       mapActionTd = `<td style="text-align:center;">
@@ -992,9 +1007,15 @@ async function loadMapPoints() {
 
       marker.bindPopup(popupHtml);
 
-      // حفظ العلامة في الخريطة والقاموس
+      // حفظ العلامة في الخريطة والقاموس بمختلف صيغ اللوحات لضمان التطابق التام
       marker.addTo(state.markersLayer);
       state.carMarkersMap.set(plateKey, marker);
+      state.carMarkersMap.set(plateKey.replace(/\s+/g, ''), marker);
+      if (p.ref_plate) {
+        const refKey = String(p.ref_plate).trim();
+        state.carMarkersMap.set(refKey, marker);
+        state.carMarkersMap.set(refKey.replace(/\s+/g, ''), marker);
+      }
       boundsList.push([p.lat, p.lng]);
     });
 
@@ -1256,7 +1277,8 @@ function focusCarOnMap(plate) {
   if (!initFleetMap()) return;
 
   const cleanPlate = String(plate).trim();
-  const marker = state.carMarkersMap.get(cleanPlate);
+  const normPlate = cleanPlate.replace(/\s+/g, '');
+  const marker = state.carMarkersMap.get(cleanPlate) || state.carMarkersMap.get(normPlate);
 
   // فتح نافذة الخريطة المنبثقة أولاً
   const modal = document.getElementById("fleetMapModal");

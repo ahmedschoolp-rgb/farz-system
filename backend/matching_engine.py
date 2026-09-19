@@ -16,6 +16,9 @@
 import time
 import json
 import os
+import re
+import urllib.request
+import concurrent.futures
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Union
 import duckdb
@@ -519,44 +522,141 @@ def quick_search_single_plate(user_id: int, query_plate: str) -> List[Dict[str, 
         con.close()
 
 
+_RESOLVED_URL_CACHE: Dict[str, str] = {}
+
+
+def resolve_short_maps_url(url: str, timeout: float = 2.5) -> str:
+    """
+    فك اختصار روابط خرائط جوجل (مثل maps.app.goo.gl أو goo.gl/maps)
+    لجلب الرابط الحقيقي الذي يحتوي على إحداثيات خط الطول والعرض.
+    """
+    if not url or not isinstance(url, str):
+        return ""
+    url = url.strip()
+    if not ('goo.gl' in url or 'maps.app' in url):
+        return url
+
+    if url in _RESOLVED_URL_CACHE:
+        return _RESOLVED_URL_CACHE[url]
+
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        )
+
+        class RedirectCapture(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                self.redirect_url = newurl
+                return None  # التقاط أول تحويل دون استنزاف شبكة أو تحميل صفحات ثقيلة
+
+        h = RedirectCapture()
+        h.redirect_url = None
+        opener = urllib.request.build_opener(h)
+        try:
+            opener.open(req, timeout=timeout)
+        except Exception:
+            pass
+
+        final_url = h.redirect_url or url
+        _RESOLVED_URL_CACHE[url] = final_url
+        return final_url
+    except Exception:
+        _RESOLVED_URL_CACHE[url] = url
+        return url
+
+
 def parse_geo_coordinates(loc_str: str) -> Optional[tuple[float, float]]:
-    """استخراج إحداثيات خط الطول والعرض من أي رابط أو نص موقع حقيقي فقط"""
+    """
+    استخراج إحداثيات خط الطول والعرض من أي رابط أو نص موقع حقيقي فقط
+    يدعم:
+    1. روابط خرائط جوجل المختصرة (maps.app.goo.gl / goo.gl/maps)
+    2. روابط خرائط جوجل الكاملة بمختلف أنماطها (place, @, ?q=, ll=, destination)
+    3. معلمات protobuf داخل روابط جوجل (!3d24.xxx!4d46.xxx)
+    4. الإحداثيات الصريحة (24.7136, 46.6753)
+    """
     if not loc_str or not isinstance(loc_str, str):
         return None
     loc_str = loc_str.strip()
     if not loc_str:
         return None
 
-    import re
-    # 1. إحداثيات صريحة: 24.7136, 46.6753
-    match = re.search(r'([-+]?\d{1,2}\.\d+)\s*[,|\s]\s*([-+]?\d{1,3}\.\d+)', loc_str)
-    if match:
+    # فك الرابط المختصر إذا وجد
+    if 'goo.gl' in loc_str or 'maps.app' in loc_str:
+        loc_str = resolve_short_maps_url(loc_str)
+
+    # 1. إحداثيات protobuf داخل روابط جوجل: !3d(lat)!4d(lng)
+    m_proto = re.search(r'!3d([-+]?\d{1,2}\.\d+)!4d([-+]?\d{1,3}\.\d+)', loc_str)
+    if m_proto:
+        try:
+            lat = float(m_proto.group(1))
+            lng = float(m_proto.group(2))
+            if -90 <= lat <= 90 and -180 <= lng <= 180 and not (lat == 0.0 and lng == 0.0):
+                return lat, lng
+        except ValueError:
+            pass
+
+    # 2. مسارات وروابط خرائط جوجل: place/LAT,LNG أو @LAT,LNG أو q=LAT,LNG أو ll=LAT,LNG
+    m_url = re.search(r'(?:place/|@|[?&](?:q|query|ll|loc|destination|saddr|daddr)=)([-+]?\d{1,2}\.\d+)[,\s]+([-+]?\d{1,3}\.\d+)', loc_str, re.IGNORECASE)
+    if m_url:
+        try:
+            lat = float(m_url.group(1))
+            lng = float(m_url.group(2))
+            if -90 <= lat <= 90 and -180 <= lng <= 180 and not (lat == 0.0 and lng == 0.0):
+                return lat, lng
+        except ValueError:
+            pass
+
+    # 3. أي تطابق لإحداثيات صريحة LAT, LNG في أي موضع من النص
+    for match in re.finditer(r'([-+]?\d{1,2}\.\d+)\s*[,|\s]\s*([-+]?\d{1,3}\.\d+)', loc_str):
         try:
             lat = float(match.group(1))
             lng = float(match.group(2))
             if -90 <= lat <= 90 and -180 <= lng <= 180 and not (lat == 0.0 and lng == 0.0):
                 return lat, lng
         except ValueError:
-            pass
-
-    # 2. روابط خرائط جوجل مع بارامتر q أو query أو ll أو @
-    match_url = re.search(r'[?&](?:q|query|ll|loc)=([-+]?\d{1,2}\.\d+),([-+]?\d{1,3}\.\d+)', loc_str)
-    if match_url:
-        try:
-            lat = float(match_url.group(1))
-            lng = float(match_url.group(2))
-            if -90 <= lat <= 90 and -180 <= lng <= 180 and not (lat == 0.0 and lng == 0.0):
-                return lat, lng
-        except ValueError:
-            pass
+            continue
 
     return None
+
+
+def extract_row_location_and_coords(row: Dict[str, Any]) -> tuple[Optional[tuple[float, float]], str]:
+    """
+    فحص الصف بالكامل للعثور على أي رابط أو إحداثيات جغرافية حقيقية في أي عمود كان
+    (سواء كان العمود اسمه الموقع، الرابط، الحي، الشارع، الملاحظات، أو أي عمود آخر)
+    """
+    # 1. فحص الأعمدة ذات المسميات المرجحة للموقع أولاً
+    priority_keys = [
+        'الموقع', 'رابط الموقع', 'الرابط', 'اللوكيشن', 'لوكيشن',
+        'الاحداثيات', 'الإحداثيات', 'احداثيات', 'خريطة', 'الخريطة',
+        'موقع', 'location', 'map', 'maps', 'gps', 'coordinates', 'url', 'link'
+    ]
+    for k in priority_keys:
+        val = str(row.get(k, '') or '').strip()
+        if val:
+            c = parse_geo_coordinates(val)
+            if c:
+                return c, val
+
+    # 2. فحص كافة الأعمدة الأخرى التي تحتوي على نصوص أو أرقام
+    for k, v in row.items():
+        if k.startswith('__') or k in priority_keys:
+            continue
+        v_str = str(v or '').strip()
+        if not v_str:
+            continue
+        if any(x in v_str for x in ['http', 'maps', 'goo.gl']) or ('.' in v_str and any(ch.isdigit() for ch in v_str)):
+            c = parse_geo_coordinates(v_str)
+            if c:
+                return c, v_str
+
+    return None, ""
 
 
 def get_match_map_points(user_id: int) -> List[Dict[str, Any]]:
     """
     استرجاع بيانات ومواقع السيارات المتطابقة التي تملك موقعاً أو إحداثيات حقيقية فقط
-    (استبعاد تام لأي سيارة لا تملك موقعاً حقيقياً لعدم تضليل المستخدم)
+    مع الفحص الشامل لكافة أعمدة البيانات وحل الروابط المختصرة تلقائياً
     """
     db_path = get_user_duckdb_path(user_id)
     if not db_path.exists():
@@ -568,26 +668,45 @@ def get_match_map_points(user_id: int) -> List[Dict[str, Any]]:
         if table_check == 0:
             return []
 
-        df = con.execute("SELECT * FROM last_match WHERE __is_matched__ = 1 LIMIT 500;").df().fillna('')
+        df = con.execute("SELECT * FROM last_match WHERE __is_matched__ = 1 LIMIT 5000;").df().fillna('')
+        if len(df) == 0:
+            return []
+
+        # استخراج مسبق لكافة الروابط المختصرة وحلها بالتوازي لسرعة فائقة
+        short_urls = set()
+        for _, row in df.iterrows():
+            for v in row.values:
+                v_str = str(v or '')
+                if 'maps.app' in v_str or 'goo.gl' in v_str:
+                    m = re.search(r'https?://[^\s<>"\']+', v_str)
+                    if m:
+                        short_urls.add(m.group(0))
+
+        if short_urls:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(12, len(short_urls))) as executor:
+                list(executor.map(resolve_short_maps_url, short_urls))
 
         points = []
         for idx, row in df.iterrows():
-            loc_val = str(row.get('الموقع', '') or row.get('رابط الموقع', '') or '')
-            coords = parse_geo_coordinates(loc_val)
+            row_dict = dict(row)
+            coords, loc_val = extract_row_location_and_coords(row_dict)
 
             # إدراج السيارة فقط إذا كانت تملك إحداثيات حقيقية مستخرجة
             if coords is not None:
                 lat, lng = coords
+                plate_str = str(row_dict.get('اللوحة', '') or row_dict.get('لوحة الإحالة', ''))
+                ref_plate_str = str(row_dict.get('لوحة الإحالة', '') or row_dict.get('اللوحة', ''))
+
                 points.append({
-                    "id": int(row.get('__row_id__', idx + 1)),
-                    "plate": str(row.get('اللوحة', '')),
-                    "ref_plate": str(row.get('لوحة الإحالة', '')),
-                    "status": str(row.get('حالة المطابقة', 'متطابق')),
-                    "type": str(row.get('النوع', '') or row.get('طراز الإحالة', '') or ''),
-                    "client": str(row.get('اسم العميل', '')),
-                    "street": str(row.get('الشارع', '')),
-                    "district": str(row.get('الحي', '')),
-                    "date": str(row.get('التاريخ', '')),
+                    "id": int(row_dict.get('__row_id__', idx + 1)),
+                    "plate": plate_str,
+                    "ref_plate": ref_plate_str,
+                    "status": str(row_dict.get('حالة المطابقة', 'متطابق')),
+                    "type": str(row_dict.get('النوع', '') or row_dict.get('طراز الإحالة', '') or ''),
+                    "client": str(row_dict.get('اسم العميل', '')),
+                    "street": str(row_dict.get('الشارع', '')),
+                    "district": str(row_dict.get('الحي', '')),
+                    "date": str(row_dict.get('التاريخ', '')),
                     "location_raw": loc_val,
                     "lat": lat,
                     "lng": lng,
